@@ -216,6 +216,7 @@ function runClaudeAttempt(diff, args, env, stallTimeoutMs) {
     child.stdout.on('data', (chunk) => {
       stdout += chunk;
       lastActivityAt = Date.now();
+      process.stdout.write(chunk);
     });
 
     child.stderr.on('data', (chunk) => {

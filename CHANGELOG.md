@@ -2,6 +2,14 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.0-beta.6] - 2026-02-25
+
+### Changed
+
+- **Live stdout streaming added** — Claude CLI stdout is now also piped to `process.stdout` in real time alongside stderr, so the full output stream (including the JSON response as it builds) is visible in the Actions log as it arrives.
+
+---
+
 ## [1.0.0-beta.5] - 2026-02-25
 
 ### Added
