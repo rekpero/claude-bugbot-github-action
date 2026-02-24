@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execSync, execFileSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { readFileSync, writeFileSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -141,18 +141,33 @@ function runClaude(diff) {
     '--max-budget-usd', MAX_BUDGET,
   ];
 
-  try {
-    // Use execFileSync to avoid shell escaping issues with the prompt
-    const stdout = execFileSync('claude', args, {
-      input: diff,
-      encoding: 'utf-8',
-      maxBuffer: 50 * 1024 * 1024,
-      timeout: 5 * 60 * 1000, // 5 minute timeout
-    });
-    return stdout;
-  } catch (err) {
-    throw new Error(`Claude Code CLI failed: ${err.message}`);
+  const result = spawnSync('claude', args, {
+    input: diff,
+    encoding: 'utf-8',
+    maxBuffer: 50 * 1024 * 1024,
+    timeout: 5 * 60 * 1000, // 5 minute timeout
+    env: {
+      ...process.env,
+      CI: 'true',
+      NO_COLOR: '1',
+      TERM: 'dumb',
+      CLAUDE_NO_TELEMETRY: '1',
+    },
+  });
+
+  if (result.stderr) {
+    console.error('Claude stderr:\n' + result.stderr);
   }
+
+  if (result.error) {
+    throw new Error(`Claude Code CLI failed: ${result.error.message}`);
+  }
+
+  if (result.status !== 0) {
+    throw new Error(`Claude Code CLI exited with status ${result.status}${result.stderr ? ': ' + result.stderr.trim() : ''}`);
+  }
+
+  return result.stdout;
 }
 
 // --- Parse Claude's response ---

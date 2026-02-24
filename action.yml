@@ -45,7 +45,7 @@ runs:
       shell: bash
       run: |
         mkdir -p ~/.claude
-        echo '{"hasCompletedOnboarding":true}' > ~/.claude.json
+        echo '{"hasCompletedOnboarding":true,"autoUpdaterStatus":"disabled","enableTelemetry":false}' > ~/.claude.json
 
     - name: Run bug analysis
       shell: bash

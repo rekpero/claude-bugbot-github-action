@@ -2,6 +2,25 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.0-beta.2] - 2026-02-24
+
+### Added
+
+- **Stderr capture for diagnostics** — Claude CLI stderr is now captured and printed to the action log before any error is thrown, making it possible to see what claude was actually doing when a run fails or times out
+- **CI environment hardening** — Passes `CI=true`, `NO_COLOR=1`, `TERM=dumb`, and `CLAUDE_NO_TELEMETRY=1` to the claude process to suppress interactive prompts, update checks, and terminal color codes that can cause hangs in headless runners
+- **Auto-updater and telemetry disabled on first run** — `~/.claude.json` now includes `autoUpdaterStatus: "disabled"` and `enableTelemetry: false` to prevent first-run prompts from blocking the action
+
+### Fixed
+
+- **`ETIMEDOUT` hang in GitHub Actions** — The action was silently running the full 5-minute timeout because claude was waiting on a prompt or blocking on first-run initialization. The above changes suppress all known interactive flows so claude exits cleanly without user input.
+
+### Changed
+
+- `runClaude()` switched from `execFileSync` to `spawnSync` to enable separate stdout/stderr capture
+- Improved error messages: exit status and stderr are both included when claude exits non-zero
+
+---
+
 ## [1.0.0-beta.1] - 2026-02-24
 
 ### Added
