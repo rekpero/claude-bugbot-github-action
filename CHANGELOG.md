@@ -2,6 +2,23 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.0-beta.5] - 2026-02-25
+
+### Added
+
+- **Stall detection with automatic retry** — `runClaude()` now uses async `spawn` instead of `spawnSync`. A stall checker fires every 5s; if no output (stdout or stderr) is received for 60s, the process is killed with `SIGKILL` and automatically retried. Up to 3 attempts are made before failing, with a 5s pause between retries.
+- **Live stderr streaming** — Claude CLI stderr is now piped to `process.stderr` in real time so the Actions log shows Claude's progress (thinking steps, tool use, etc.) as it happens instead of only on exit.
+- **Idle heartbeat** — If the process has been silent for more than 15s, a `⏳ No output for Xs (kill threshold: 60s)...` line is logged every 5s so it's clear the process is alive but quiet, not invisibly hung.
+
+### Changed
+
+- `runClaude()` is now `async` (returns a `Promise`); call site in `main()` updated to `await runClaude(diff)`
+- `runClaudeAttempt()` extracted as a private helper that encapsulates a single spawn attempt and resolves with `{ stalled }`, `{ success, stdout }`, `{ success: false, code, stderr }`, or `{ spawnError }` for clean retry logic
+- Stall timeout (`60s`) and max attempts (`3`) defined as top-level constants for easy tuning
+- Stderr no longer printed as a block on process exit — it was already shown live
+
+---
+
 ## [1.0.0-beta.4] - 2026-02-25
 
 ### Added
