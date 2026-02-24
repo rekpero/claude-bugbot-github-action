@@ -1,12 +1,26 @@
 # Claude BugBot GitHub Action
 
-A GitHub Action that uses Claude Code CLI to automatically find bugs in your pull requests and post inline review comments on the exact lines where issues are detected.
+**The free Cursor BugBot alternative** — get the same automated PR bug analysis without paying for a Cursor subscription. If you already have a Claude Pro or Max plan, you can generate a setup token in seconds and use it directly. No API costs, no extra subscriptions.
+
+A GitHub Action that uses Claude Code CLI to automatically find bugs in your pull requests and post inline review comments on the exact lines where issues are detected. It runs directly on top of Claude Code, so analysis is fast and leverages the full power of the model without any middleware overhead.
+
+## Why use this instead of Cursor BugBot?
+
+| | Claude BugBot | Cursor BugBot |
+|---|---|---|
+| **Cost** | Free with Claude Pro/Max plan | Requires Cursor subscription |
+| **Setup** | One `claude setup-token` command | Tied to Cursor IDE |
+| **Speed** | Directly calls Claude Code — no middleware | Runs through Cursor's infrastructure |
+| **IDE dependency** | None — works in any repo | Requires Cursor |
+| **Model** | Claude Sonnet/Opus/Haiku (your choice) | Claude via Cursor |
+
+If you're already paying for Claude Pro or Max, you're leaving money on the table by also paying for Cursor just for BugBot. Run `claude setup-token`, add the secret to your repo, and you're done.
 
 ## Features
 
 - Analyzes PR diffs for bugs, logic errors, security vulnerabilities, race conditions, null dereferences, off-by-one errors, and resource leaks
 - Posts inline review comments directly on the affected lines
-- Supports Claude Max/Pro subscription auth (no API costs) or Anthropic API key
+- Free to use with any Claude Pro or Max subscription — just generate a setup token
 - Focuses only on real bugs — ignores style, formatting, and documentation issues
 - Handles large diffs gracefully (truncates at 200KB)
 - Falls back to a summary comment if inline comments can't be mapped to diff lines
