@@ -2,6 +2,26 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.0-beta.3] - 2026-02-24
+
+### Added
+
+- **Auth verification before analysis** — `checkAuth()` makes a live API call (`Reply with the single word: ok`) using the configured model before running the full diff analysis. Confirms the token is valid and the API is reachable; fails fast with a clear error rather than burning the 5-minute analysis timeout on a bad credential.
+- **Masked credential logging** — The active token or API key is logged in masked form (`sk-ant-oat01-...wxyz`) so it's easy to confirm the right secret is being used without exposing the full value.
+- **`claude --version` pre-flight** — Logged before every run to confirm the installed CLI version.
+
+### Fixed
+
+- **Auth env var conflict causing 5-minute hang** — When only `claude-setup-token` was provided, `ANTHROPIC_API_KEY` was still being set to an empty string in the runner environment. The Anthropic SDK inside the `claude` binary sees a set-but-empty `ANTHROPIC_API_KEY`, attempts API key auth with a blank value, receives a 401, and hangs in a retry/fallback loop for the full 5-minute timeout. The fix adds an explicit "Configure auth" step that writes only the non-empty auth var to `$GITHUB_ENV` — the other is left truly absent from the environment.
+
+### Changed
+
+- Auth configuration split into its own `Configure auth` step, separate from the analysis step, to ensure mutual exclusivity between `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`
+- `Run bug analysis` step no longer sets auth env vars directly; it relies on vars written to `$GITHUB_ENV` by the configure step
+- Auth ping uses `MODEL` (defaults to `sonnet`) to validate the exact model the analysis will use
+
+---
+
 ## [1.0.0-beta.2] - 2026-02-24
 
 ### Added

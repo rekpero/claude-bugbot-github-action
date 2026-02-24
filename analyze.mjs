@@ -129,6 +129,77 @@ Omit additional_locations or set it to [] if there are no related locations.
 If no bugs are found, return: {"bugs": [], "summary": "No bugs found in the changes."}`;
 }
 
+// --- Mask a secret for safe logging (show first 12 + last 4 chars) ---
+function maskSecret(value) {
+  if (!value || value.length < 20) return '[too short to mask]';
+  return value.slice(0, 12) + '...' + value.slice(-4);
+}
+
+// --- Check authentication and verify claude CLI starts ---
+function checkAuth() {
+  const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+
+  if (oauthToken) {
+    console.log(`🔑 Auth method : Claude OAuth token (setup-token)`);
+    console.log(`   Token       : ${maskSecret(oauthToken)}`);
+  } else if (apiKey) {
+    console.log(`🔑 Auth method : Anthropic API key`);
+    console.log(`   Key         : ${maskSecret(apiKey)}`);
+  } else {
+    throw new Error(
+      'No auth credentials found. Set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) ' +
+      'or ANTHROPIC_API_KEY in your workflow secrets.'
+    );
+  }
+
+  // Verify the claude CLI binary starts and log its version
+  const ver = spawnSync('claude', ['--version'], {
+    encoding: 'utf-8',
+    timeout: 15_000,
+    env: { ...process.env, CI: 'true', NO_COLOR: '1' },
+  });
+
+  if (ver.error) {
+    throw new Error(`claude CLI failed to start: ${ver.error.message}`);
+  }
+  const versionLine = (ver.stdout || ver.stderr || '').trim().split('\n')[0];
+  console.log(`   CLI version : ${versionLine || '(no version output)'}`);
+
+  // Make a lightweight API call to confirm the token/key is valid and the API is reachable.
+  // Uses haiku (fastest model) with a trivial prompt — fails fast if auth is broken.
+  console.log('🔒 Verifying API connectivity...');
+  const ping = spawnSync('claude', [
+    '-p', 'Reply with the single word: ok',
+    '--output-format', 'text',
+    '--max-turns', '1',
+    '--dangerously-skip-permissions',
+    '--model', MODEL,
+  ], {
+    encoding: 'utf-8',
+    timeout: 30_000,
+    env: { ...process.env, CI: 'true', NO_COLOR: '1', TERM: 'dumb', CLAUDE_NO_TELEMETRY: '1' },
+  });
+
+  if (ping.stderr) {
+    console.error('Auth check stderr:\n' + ping.stderr);
+  }
+
+  if (ping.error) {
+    throw new Error(`Auth check timed out or failed to start: ${ping.error.message}`);
+  }
+
+  if (ping.status !== 0) {
+    throw new Error(
+      `Auth check failed (exit ${ping.status}) — token may be expired or invalid.\n` +
+      (ping.stderr || ping.stdout || '(no output)').trim()
+    );
+  }
+
+  console.log(`   API response : ${(ping.stdout || '').trim() || '(empty)'}`);
+  console.log('✅ Auth verified');
+}
+
 // --- Run Claude Code CLI ---
 function runClaude(diff) {
   const prompt = buildPrompt();
@@ -469,6 +540,9 @@ function resolveFixedThreads(repo, prNumber, newBugs) {
 // --- Main ---
 async function main() {
   console.log('🤖 Claude BugBot - Starting analysis...');
+
+  // 0. Verify auth
+  checkAuth();
 
   // 1. Get PR info
   const pr = getPRInfo();

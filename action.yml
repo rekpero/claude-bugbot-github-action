@@ -47,11 +47,25 @@ runs:
         mkdir -p ~/.claude
         echo '{"hasCompletedOnboarding":true,"autoUpdaterStatus":"disabled","enableTelemetry":false}' > ~/.claude.json
 
+    - name: Configure auth
+      shell: bash
+      env:
+        SETUP_TOKEN: ${{ inputs.claude-setup-token }}
+        API_KEY: ${{ inputs.anthropic-api-key }}
+      run: |
+        # Only export the auth var that is actually set — an empty ANTHROPIC_API_KEY
+        # causes claude to attempt API-key auth with a blank value and hang on 401.
+        if [ -n "$SETUP_TOKEN" ]; then
+          echo "CLAUDE_CODE_OAUTH_TOKEN=$SETUP_TOKEN" >> "$GITHUB_ENV"
+          echo "Auth: using Claude setup token (OAuth)"
+        elif [ -n "$API_KEY" ]; then
+          echo "ANTHROPIC_API_KEY=$API_KEY" >> "$GITHUB_ENV"
+          echo "Auth: using Anthropic API key"
+        fi
+
     - name: Run bug analysis
       shell: bash
       env:
-        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-setup-token }}
-        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         GH_TOKEN: ${{ inputs.github-token }}
         MODEL: ${{ inputs.model }}
         MAX_BUDGET: ${{ inputs.max-budget }}
