@@ -323,18 +323,7 @@ function makeBugId(bug) {
   return `${bug.file}:${slugify(bug.title)}`;
 }
 
-function buildFixPrompt(bug, repo, branch) {
-  return [
-    `Fix this bug in \`${repo}\` (branch: \`${branch}\`):`,
-    ``,
-    `**${bug.title}** (${bug.severity})`,
-    `File: \`${bug.file}\` line ${bug.line}`,
-    ``,
-    bug.description,
-  ].join('\n');
-}
-
-function formatInlineComment(bug, repo, headSha, branch) {
+function formatInlineComment(bug, repo, headSha) {
   const severityEmoji = {
     critical: '🔴',
     high: '🟠',
@@ -355,12 +344,6 @@ function formatInlineComment(bug, repo, headSha, branch) {
     }
   }
 
-  // Fix action links
-  const encodedPrompt = encodeURIComponent(buildFixPrompt(bug, repo, branch));
-  const vsCodeUrl = `vscode://anthropic.claude-code/open?task=${encodedPrompt}`;
-  const webUrl = `https://claude.ai/new?q=${encodedPrompt}`;
-
-  comment += `\n\n[🖥️ Fix in VS Code](${vsCodeUrl}) · [🌐 Fix in Web](${webUrl})`;
   // Hidden machine-readable ID used to auto-resolve this thread when the bug is fixed
   comment += `\n<!-- bugbot-id:${makeBugId(bug)} -->`;
 
@@ -368,7 +351,7 @@ function formatInlineComment(bug, repo, headSha, branch) {
 }
 
 // --- Post PR review ---
-function postReview(repo, prNumber, headSha, branch, analysis, validLines, alreadyCommentedBugIds) {
+function postReview(repo, prNumber, headSha, analysis, validLines, alreadyCommentedBugIds) {
   const { bugs } = analysis;
 
   // Split bugs into inline-commentable and non-commentable,
@@ -384,7 +367,7 @@ function postReview(repo, prNumber, headSha, branch, analysis, validLines, alrea
         path: bug.file,
         line: bug.line,
         side: 'RIGHT',
-        body: formatInlineComment(bug, repo, headSha, branch),
+        body: formatInlineComment(bug, repo, headSha),
       });
     } else {
       orphanBugs.push(bug);
@@ -398,11 +381,7 @@ function postReview(repo, prNumber, headSha, branch, analysis, validLines, alrea
     body += '\n\n### Additional findings (could not map to diff lines)\n';
     for (const bug of orphanBugs) {
       const emoji = { critical: '🔴', high: '🟠', medium: '🟡', low: '🔵' }[bug.severity] || '⚪';
-      const encodedPrompt = encodeURIComponent(buildFixPrompt(bug, repo, branch));
-      const vsCodeUrl = `vscode://anthropic.claude-code/open?task=${encodedPrompt}`;
-      const webUrl = `https://claude.ai/new?q=${encodedPrompt}`;
       body += `\n- ${emoji} **${bug.file}:${bug.line}** — ${bug.title}: ${bug.description}`;
-      body += `\n  [🖥️ Fix in VS Code](${vsCodeUrl}) · [🌐 Fix in Web](${webUrl})`;
     }
   }
 
@@ -457,16 +436,16 @@ function postFallbackComment(repo, prNumber, body) {
   }
 }
 
-// --- Auto-resolve threads for bugs that are no longer detected ---
-// Queries all open BugBot review threads via GraphQL, resolves those whose bug ID is
-// absent from newBugs, and returns the Set of bug IDs that still have open threads
-// (so postReview can skip re-posting duplicate inline comments for them).
+// --- Manage open BugBot threads from previous runs ---
+// Requires the github-token to have pull-requests: write permission.
+// Queries open BugBot review threads, auto-resolves threads whose bug is no longer
+// detected, and returns the Set of bug IDs that still have open threads so
+// postReview can skip re-posting duplicate inline comments for them.
 function resolveFixedThreads(repo, prNumber, newBugs) {
   const [owner, repoName] = repo.split('/');
   const activeBugIds = new Set(newBugs.map(b => makeBugId(b)));
   const tmpDir = mkdtempSync(join(tmpdir(), 'bugbot-resolve-'));
 
-  // Query all review threads (up to 100; enough for any real PR)
   const queryPayload = {
     query: `query($owner: String!, $repo: String!, $pr: Int!) {
       repository(owner: $owner, name: $repo) {
@@ -494,7 +473,7 @@ function resolveFixedThreads(repo, prNumber, newBugs) {
     const raw = execSync(`gh api graphql --input "${queryPath}"`, { encoding: 'utf-8' });
     threads = JSON.parse(raw)?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
   } catch (err) {
-    console.warn(`⚠️ Could not fetch review threads (skipping auto-resolve): ${err.message}`);
+    console.warn(`⚠️ Could not fetch review threads (skipping deduplication): ${err.message}`);
     return new Set();
   }
 
@@ -583,13 +562,13 @@ async function main() {
 
   console.log(`   Found ${analysis.bugs.length} potential bug(s)`);
 
-  // 7. Auto-resolve threads for bugs that are no longer detected
+  // 7. Resolve fixed threads and get already-commented bug IDs to suppress duplicates
   console.log('🔄 Checking for resolved issues...');
   const alreadyCommentedBugIds = resolveFixedThreads(pr.repo, pr.number, analysis.bugs);
 
   // 8. Post review for new / still-present bugs
   console.log('💬 Posting PR review...');
-  postReview(pr.repo, pr.number, pr.headSha, pr.branch, analysis, validLines, alreadyCommentedBugIds);
+  postReview(pr.repo, pr.number, pr.headSha, analysis, validLines, alreadyCommentedBugIds);
 
   console.log('🤖 Claude BugBot - Done!');
 }

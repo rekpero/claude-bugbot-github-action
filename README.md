@@ -35,12 +35,15 @@ claude setup-token
 
 Copy the output token (`sk-ant-oat01-...`).
 
-### 2. Add the secret to your repo
+### 2. Add secrets to your repo
 
 Go to your repo's **Settings > Secrets and variables > Actions > New repository secret** and create:
 
-- Name: `CLAUDE_SETUP_TOKEN`
-- Value: the token from step 1
+- Name: `CLAUDE_SETUP_TOKEN` — the token from step 1
+
+**Optional — for auto-resolving fixed threads:** If you see `Resource not accessible by integration` errors on thread resolution, create a [Personal Access Token (classic)](https://github.com/settings/tokens) with `repo` scope and add it as:
+
+- Name: `GH_PAT` — your PAT with `repo` scope
 
 ### 3. Add the workflow
 
@@ -77,10 +80,12 @@ That's it. Open a PR and BugBot will analyze the changes automatically.
 | `claude-setup-token` | No* | — | OAuth token from `claude setup-token` (for Max/Pro subscribers) |
 | `anthropic-api-key` | No* | — | Anthropic API key (billed per token) |
 | `model` | No | `sonnet` | Claude model (`sonnet`, `opus`, `haiku`) |
-| `github-token` | No | `${{ github.token }}` | GitHub token for posting reviews |
+| `github-token` | No | `${{ github.token }}` | GitHub token for posting reviews and resolving fixed threads. Requires `pull-requests: write`. |
 | `max-budget` | No | `1.00` | Max spend per run in USD |
 
 \* One of `claude-setup-token` or `anthropic-api-key` must be provided.
+
+> **Required workflow permission:** The token needs `pull-requests: write` for both posting comments and auto-resolving threads when a bug is fixed. Also verify: **Settings → Actions → General → Workflow permissions → "Read and write permissions"** — if this is set to read-only it overrides workflow-level declarations.
 
 ## How It Works
 

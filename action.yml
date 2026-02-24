@@ -18,7 +18,7 @@ inputs:
     required: false
     default: 'sonnet'
   github-token:
-    description: 'GitHub token for posting PR reviews'
+    description: 'GitHub token for posting PR reviews and resolving fixed threads. Requires pull-requests: write permission.'
     required: false
     default: ${{ github.token }}
   max-budget:

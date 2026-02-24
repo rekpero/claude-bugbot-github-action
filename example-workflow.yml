@@ -16,6 +16,10 @@ on:
 
 permissions:
   contents: read
+  # pull-requests: write is required for:
+  #   - posting inline review comments
+  #   - auto-resolving threads when a bug is fixed in a follow-up commit
+  # Also ensure your repo allows it: Settings → Actions → General → Workflow permissions → "Read and write permissions"
   pull-requests: write
 
 jobs:
@@ -41,3 +45,10 @@ jobs:
 
           # Optional: Set max budget per run in USD (default: 1.00)
           # max-budget: '1.00'
+
+          # Optional: Pass a PAT for auto-resolving fixed threads.
+          # The default github.token works for posting comments but may fail to
+          # resolve threads depending on repo settings. If you see
+          # "Resource not accessible by integration" errors, create a PAT with
+          # repo scope, store it as a secret, and pass it here instead.
+          # github-token: ${{ secrets.GH_PAT }}
