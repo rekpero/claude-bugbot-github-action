@@ -1,0 +1,117 @@
+# Claude BugBot GitHub Action
+
+A GitHub Action that uses Claude Code CLI to automatically find bugs in your pull requests and post inline review comments on the exact lines where issues are detected.
+
+## Features
+
+- Analyzes PR diffs for bugs, logic errors, security vulnerabilities, race conditions, null dereferences, off-by-one errors, and resource leaks
+- Posts inline review comments directly on the affected lines
+- Supports Claude Max/Pro subscription auth (no API costs) or Anthropic API key
+- Focuses only on real bugs — ignores style, formatting, and documentation issues
+- Handles large diffs gracefully (truncates at 200KB)
+- Falls back to a summary comment if inline comments can't be mapped to diff lines
+
+## Quick Start
+
+### 1. Generate your Claude setup token
+
+```bash
+claude setup-token
+```
+
+Copy the output token (`sk-ant-oat01-...`).
+
+### 2. Add the secret to your repo
+
+Go to your repo's **Settings > Secrets and variables > Actions > New repository secret** and create:
+
+- Name: `CLAUDE_SETUP_TOKEN`
+- Value: the token from step 1
+
+### 3. Add the workflow
+
+Create `.github/workflows/bugbot.yml` in your repo:
+
+```yaml
+name: Claude BugBot
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  bugbot:
+    runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rekpero/claude-bugbot-github-action@main
+        with:
+          claude-setup-token: ${{ secrets.CLAUDE_SETUP_TOKEN }}
+```
+
+That's it. Open a PR and BugBot will analyze the changes automatically.
+
+## Inputs
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `claude-setup-token` | No* | — | OAuth token from `claude setup-token` (for Max/Pro subscribers) |
+| `anthropic-api-key` | No* | — | Anthropic API key (billed per token) |
+| `model` | No | `sonnet` | Claude model (`sonnet`, `opus`, `haiku`) |
+| `github-token` | No | `${{ github.token }}` | GitHub token for posting reviews |
+| `max-budget` | No | `1.00` | Max spend per run in USD |
+
+\* One of `claude-setup-token` or `anthropic-api-key` must be provided.
+
+## How It Works
+
+1. Fetches the PR diff
+2. Parses the diff to identify which lines are commentable
+3. Sends the diff to Claude Code CLI for bug analysis
+4. Claude returns structured findings with file paths, line numbers, and descriptions
+5. Validates line numbers against the actual diff (to avoid invalid review comments)
+6. Posts a PR review with inline comments on buggy lines and a summary
+
+## Example Output
+
+When bugs are found, you'll see inline comments like:
+
+> **HIGH**: Potential null dereference
+>
+> `user.profile.name` will throw if `user.profile` is null. Add a null check before accessing nested properties.
+
+And a summary review comment:
+
+> **Claude BugBot Analysis**
+>
+> Found **2** potential bugs in this PR.
+> **high**: 1 | **medium**: 1
+
+## Auth: Setup Token vs API Key
+
+| | Setup Token | API Key |
+|---|---|---|
+| **Cost** | Included in Max/Pro subscription | Billed per token |
+| **Setup** | `claude setup-token` | Get key from console.anthropic.com |
+| **Secret name** | `CLAUDE_SETUP_TOKEN` | `ANTHROPIC_API_KEY` |
+| **Expiration** | Expires periodically, regenerate with `claude setup-token` | Does not expire |
+
+## Notes
+
+- The setup token expires periodically. If the action starts failing with auth errors, regenerate it with `claude setup-token`.
+- Diffs larger than 200KB are truncated to keep analysis costs and latency reasonable.
+- The action only comments on bugs in added/modified lines — it won't flag issues in unchanged code.
+- Bot PRs (e.g. Dependabot) are skipped by default in the example workflow. Remove the `if` condition to include them.
+
+## Disclaimer
+
+Built for personal use and experimentation by [rekpero](https://github.com/rekpero). Use it at your own risk.
+
+## Contributing
+
+Want to help make it better? Open a PR — the same Claude BugBot will review it for you.

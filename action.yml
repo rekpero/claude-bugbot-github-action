@@ -1,0 +1,58 @@
+name: 'Claude BugBot'
+description: 'Analyze PR changes for bugs using Claude Code CLI and post inline review comments'
+author: 'mitrasish-personal'
+
+branding:
+  icon: 'search'
+  color: 'orange'
+
+inputs:
+  claude-setup-token:
+    description: 'Claude Code OAuth token from `claude setup-token` (for Max/Pro subscription users)'
+    required: false
+  anthropic-api-key:
+    description: 'Anthropic API key (alternative to claude-setup-token)'
+    required: false
+  model:
+    description: 'Claude model to use (e.g. sonnet, opus, haiku)'
+    required: false
+    default: 'sonnet'
+  github-token:
+    description: 'GitHub token for posting PR reviews'
+    required: false
+    default: ${{ github.token }}
+  max-budget:
+    description: 'Maximum budget in USD per analysis run'
+    required: false
+    default: '1.00'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate auth inputs
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.claude-setup-token }}" ] && [ -z "${{ inputs.anthropic-api-key }}" ]; then
+          echo "::error::Either 'claude-setup-token' or 'anthropic-api-key' must be provided"
+          exit 1
+        fi
+
+    - name: Install Claude Code CLI
+      shell: bash
+      run: npm install -g @anthropic-ai/claude-code
+
+    - name: Bypass onboarding for CI
+      shell: bash
+      run: |
+        mkdir -p ~/.claude
+        echo '{"hasCompletedOnboarding":true}' > ~/.claude.json
+
+    - name: Run bug analysis
+      shell: bash
+      env:
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-setup-token }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        MODEL: ${{ inputs.model }}
+        MAX_BUDGET: ${{ inputs.max-budget }}
+      run: node ${{ github.action_path }}/analyze.mjs

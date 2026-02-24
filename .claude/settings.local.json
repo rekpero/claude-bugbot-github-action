@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.github.com)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:institute.sfeir.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:claudelog.com)",
+      "WebFetch(domain:depot.dev)",
+      "WebFetch(domain:wain.blog)"
+    ]
+  }
+}

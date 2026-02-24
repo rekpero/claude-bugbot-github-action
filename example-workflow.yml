@@ -1,0 +1,43 @@
+# Copy this file to your repo at: .github/workflows/bugbot.yml
+#
+# Setup:
+# 1. Run `claude setup-token` locally to generate your OAuth token
+# 2. Add the token as a repository secret named CLAUDE_SETUP_TOKEN
+#    (Settings → Secrets and variables → Actions → New repository secret)
+# 3. Push this workflow file to your repo
+#
+# The action will run automatically on every PR and push to a PR.
+
+name: Claude BugBot
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  bugbot:
+    runs-on: ubuntu-latest
+    # Skip bot PRs (e.g. dependabot) - remove if you want to analyze those too
+    if: github.actor != 'dependabot[bot]'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Claude BugBot
+        uses: rekpero/claude-bugbot-github-action@main
+        with:
+          # Primary: Use Claude Max/Pro subscription (no API costs)
+          claude-setup-token: ${{ secrets.CLAUDE_SETUP_TOKEN }}
+
+          # Alternative: Use Anthropic API key instead (billed per token)
+          # anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+          # Optional: Choose model (default: sonnet)
+          # model: 'sonnet'
+
+          # Optional: Set max budget per run in USD (default: 1.00)
+          # max-budget: '1.00'
