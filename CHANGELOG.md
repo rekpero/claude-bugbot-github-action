@@ -2,6 +2,20 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.0-beta.7] - 2026-02-25
+
+### Fixed
+
+- **Claude process producing zero output / hanging on all attempts** — Root cause: `claude -p "prompt"` in non-interactive mode does not read from piped stdin. The async `spawn` was writing the diff to stdin, but claude ignored it and stalled indefinitely waiting on the unread pipe. Fix: the diff is now embedded directly at the end of the `-p` prompt argument so no stdin is needed at all.
+
+### Changed
+
+- `buildPrompt()` now accepts `diff` as a parameter and appends the full diff content to the prompt string under a `Here is the PR diff to analyze:` header
+- `runClaudeAttempt()` spawns with `stdio: ['ignore', 'pipe', 'pipe']` — stdin is explicitly closed (`/dev/null`); stdout and stderr remain piped as before
+- `diff` parameter removed from `runClaudeAttempt()` signature (diff is now part of `args` via the prompt)
+
+---
+
 ## [1.0.0-beta.6] - 2026-02-25
 
 ### Changed

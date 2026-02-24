@@ -92,10 +92,10 @@ function parseDiff(diff) {
 }
 
 // --- Build the analysis prompt ---
-function buildPrompt() {
+function buildPrompt(diff) {
   return `You are a senior software engineer performing a focused bug review on a pull request diff.
 
-TASK: Analyze the diff provided via stdin and identify ONLY genuine bugs, logic errors, security vulnerabilities, race conditions, null/undefined dereferences, off-by-one errors, resource leaks, and other concrete defects in the ADDED or MODIFIED lines (lines starting with +).
+TASK: Analyze the following PR diff and identify ONLY genuine bugs, logic errors, security vulnerabilities, race conditions, null/undefined dereferences, off-by-one errors, resource leaks, and other concrete defects in the ADDED or MODIFIED lines (lines starting with +).
 
 DO NOT report:
 - Style issues, naming conventions, or formatting
@@ -126,7 +126,11 @@ Respond with ONLY a JSON object (no markdown fences, no extra text) in this exac
 }
 
 Omit additional_locations or set it to [] if there are no related locations.
-If no bugs are found, return: {"bugs": [], "summary": "No bugs found in the changes."}`;
+If no bugs are found, return: {"bugs": [], "summary": "No bugs found in the changes."}
+
+Here is the PR diff to analyze:
+
+${diff}`;
 }
 
 // --- Mask a secret for safe logging (show first 12 + last 4 chars) ---
@@ -201,17 +205,15 @@ function checkAuth() {
 }
 
 // --- Single attempt: spawn claude, kill+return if no output for stallTimeoutMs ---
-function runClaudeAttempt(diff, args, env, stallTimeoutMs) {
+function runClaudeAttempt(args, env, stallTimeoutMs) {
   return new Promise((resolve) => {
-    const child = spawn('claude', args, { env });
+    // stdin is 'ignore' — diff is embedded in the -p prompt arg, no stdin needed
+    const child = spawn('claude', args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
 
     let stdout = '';
     let stderr = '';
     let lastActivityAt = Date.now();
     let stalledAndKilled = false;
-
-    child.stdin.write(diff, 'utf-8');
-    child.stdin.end();
 
     child.stdout.on('data', (chunk) => {
       stdout += chunk;
@@ -264,7 +266,7 @@ const STALL_TIMEOUT_MS = 60_000; // kill if no output for 60s
 const MAX_ATTEMPTS = 3;
 
 async function runClaude(diff) {
-  const prompt = buildPrompt();
+  const prompt = buildPrompt(diff);
   const args = [
     '-p', prompt,
     '--output-format', 'json',
@@ -288,7 +290,7 @@ async function runClaude(diff) {
     }
 
     console.log(`   Attempt ${attempt}/${MAX_ATTEMPTS} (stall limit: ${STALL_TIMEOUT_MS / 1000}s)...`);
-    const result = await runClaudeAttempt(diff, args, env, STALL_TIMEOUT_MS);
+    const result = await runClaudeAttempt(args, env, STALL_TIMEOUT_MS);
 
     if (result.stalled) {
       console.warn(`⚠️  No output for ${STALL_TIMEOUT_MS / 1000}s — process killed.`);
