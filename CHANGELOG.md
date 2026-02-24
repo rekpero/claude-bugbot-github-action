@@ -2,6 +2,15 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.0-beta.8] - 2026-02-25
+
+### Changed
+
+- **Stall timeout raised from 60s to 3 minutes** — Claude sonnet analyzing a real diff can legitimately take 1–2+ minutes before producing its first output token (especially with `--output-format json` which may buffer until the full response is ready). The 60s threshold was killing the process mid-analysis. 3 minutes gives normal runs enough headroom while still catching genuinely stuck processes.
+- **Idle heartbeat threshold raised from 15s to 30s** — Reduces log noise during the first 30s of normal startup before the heartbeat countdown begins.
+
+---
+
 ## [1.0.0-beta.7] - 2026-02-25
 
 ### Fixed

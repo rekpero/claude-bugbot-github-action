@@ -235,7 +235,7 @@ function runClaudeAttempt(args, env, stallTimeoutMs) {
         stalledAndKilled = true;
         clearInterval(stallChecker);
         child.kill('SIGKILL');
-      } else if (idleMs > 15_000) {
+      } else if (idleMs > 30_000) {
         console.log(`   ⏳ No output for ${Math.round(idleMs / 1000)}s (kill threshold: ${stallTimeoutMs / 1000}s)...`);
       }
     }, 5_000);
@@ -262,7 +262,7 @@ function runClaudeAttempt(args, env, stallTimeoutMs) {
 }
 
 // --- Run Claude Code CLI with stall detection and automatic retry ---
-const STALL_TIMEOUT_MS = 60_000; // kill if no output for 60s
+const STALL_TIMEOUT_MS = 3 * 60_000; // kill if no output for 3 minutes
 const MAX_ATTEMPTS = 3;
 
 async function runClaude(diff) {
