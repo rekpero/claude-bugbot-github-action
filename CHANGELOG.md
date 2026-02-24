@@ -2,6 +2,29 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.0-beta.4] - 2026-02-25
+
+### Added
+
+- **PAT support for thread resolution** — `github-token` input now accepts a Personal Access Token with `repo` scope as an alternative to the default `GITHUB_TOKEN`. Useful when `resolveReviewThread` GraphQL mutations fail with `Resource not accessible by integration` errors due to repo-level permission restrictions. Example workflow now includes a commented-out `github-token: ${{ secrets.GH_PAT }}` option.
+- **Permission documentation** — README and action description now explicitly call out that `pull-requests: write` is required for both posting comments and resolving threads, and note the repo-level setting (Settings → Actions → General → Workflow permissions → "Read and write permissions") that can silently override workflow-level declarations.
+
+### Removed
+
+- **"Fix in VS Code" and "Fix in Web" links** — Removed `vscode://` deep-links and `claude.ai/new` links from all inline review comments and orphan bug entries in the summary comment. Comments are now focused on the bug description only.
+- **`buildFixPrompt()`** — Helper function removed along with the fix links.
+
+### Fixed
+
+- **`gh: Resource not accessible by integration` on thread resolution** — `resolveReviewThread` GraphQL mutation fails when the default `GITHUB_TOKEN` integration token lacks the necessary permissions. Fix: pass a PAT with `repo` scope via `secrets.GH_PAT` and set `github-token: ${{ secrets.GH_PAT }}` in the workflow.
+
+### Changed
+
+- `postReview()` and `formatInlineComment()` no longer accept or forward a `branch` parameter (was only used for fix links)
+- README Quick Start step 2 updated with optional `GH_PAT` secret instructions and when to use it
+
+---
+
 ## [1.0.0-beta.3] - 2026-02-24
 
 ### Added
