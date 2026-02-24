@@ -2,6 +2,25 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.0-beta.1] - 2026-02-24
+
+### Added
+
+- **Additional Locations** — Each inline comment lists other files in the diff that share the same bug pattern, with clickable GitHub links to the exact line (`file.ts:42` → `github.com/.../blob/<sha>/file.ts#L42`)
+- **Fix in VS Code** — Each comment includes a `vscode://` deep-link that opens the Claude Code extension pre-filled with the bug description, file, line, repo, and branch so the fix can be applied with one Enter press
+- **Fix in Web** — Each comment includes a `https://claude.ai/new` link that opens a new Claude conversation pre-loaded with the full fix prompt including repo and branch context
+- Fix links are also appended to orphan bugs in the summary comment (bugs that could not be mapped to diff lines)
+- **Auto-resolve fixed threads** — When a new commit is pushed, BugBot queries all open BugBot review threads via the GitHub GraphQL API (`resolveReviewThread` mutation) and automatically marks resolved any thread whose bug is no longer detected
+- **Duplicate suppression** — Bugs that still have an open thread from a previous run are skipped when posting the new review, so the same issue is never commented twice
+
+### Changed
+
+- `getPRInfo()` now also extracts `pr.head.ref` (branch name) passed through to all comment formatters
+- Each inline comment embeds a hidden `<!-- bugbot-id:file:title-slug -->` marker used to match threads across commits
+- `postReview()` accepts `branch` and `alreadyCommentedBugIds` as new parameters
+
+---
+
 ## [1.0.0-beta.0] - 2026-02-24
 
 ### Initial Release

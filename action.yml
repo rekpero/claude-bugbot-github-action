@@ -3,7 +3,7 @@ description: 'Analyze PR changes for bugs using Claude Code CLI and post inline 
 author: 'mitrasish-personal'
 
 branding:
-  icon: 'search'
+  icon: 'check-circle'
   color: 'orange'
 
 inputs:
