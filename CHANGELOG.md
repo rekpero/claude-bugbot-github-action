@@ -2,6 +2,22 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.0-beta.9] - 2026-02-25
+
+### Fixed
+
+- **Reverted to `spawnSync` for analysis** — Async `spawn` produced zero output on every attempt regardless of stdin, prompt size, stdio config, or timeout length. `spawnSync` is used for `checkAuth` and reliably works. The root cause of the original `spawnSync` ETIMEDOUT hang was the auth env var conflict (fixed in beta.3), not `spawnSync` itself. With auth now confirmed working, `spawnSync` + 5-minute timeout is the correct approach.
+
+### Changed
+
+- `runClaude()` now uses `spawnSync` with `timeout: 300s` and `killSignal: 'SIGKILL'`; on `ETIMEDOUT` it retries up to 3 times
+- Removed `runClaudeAttempt()` helper (was only needed for async spawn stall detection)
+- Removed `spawn` import (no longer used)
+- Renamed constant `STALL_TIMEOUT_MS` → `ANALYSIS_TIMEOUT_MS` (5 minutes)
+- Stderr is printed after completion (can't stream live with `spawnSync`)
+
+---
+
 ## [1.0.0-beta.8] - 2026-02-25
 
 ### Changed

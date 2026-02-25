@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execSync, spawnSync, spawn } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { readFileSync, writeFileSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -204,65 +204,10 @@ function checkAuth() {
   console.log('✅ Auth verified');
 }
 
-// --- Single attempt: spawn claude, kill+return if no output for stallTimeoutMs ---
-function runClaudeAttempt(args, env, stallTimeoutMs) {
-  return new Promise((resolve) => {
-    // stdin is 'ignore' — diff is embedded in the -p prompt arg, no stdin needed
-    const child = spawn('claude', args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
-
-    let stdout = '';
-    let stderr = '';
-    let lastActivityAt = Date.now();
-    let stalledAndKilled = false;
-
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-      lastActivityAt = Date.now();
-      process.stdout.write(chunk);
-    });
-
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-      lastActivityAt = Date.now();
-      // Stream live so the Actions log shows Claude is actively working
-      process.stderr.write(chunk);
-    });
-
-    // Check every 5s: log idle time after 15s of silence, kill at stallTimeoutMs
-    const stallChecker = setInterval(() => {
-      const idleMs = Date.now() - lastActivityAt;
-      if (idleMs > stallTimeoutMs) {
-        stalledAndKilled = true;
-        clearInterval(stallChecker);
-        child.kill('SIGKILL');
-      } else if (idleMs > 30_000) {
-        console.log(`   ⏳ No output for ${Math.round(idleMs / 1000)}s (kill threshold: ${stallTimeoutMs / 1000}s)...`);
-      }
-    }, 5_000);
-
-    child.on('close', (code) => {
-      clearInterval(stallChecker);
-      if (stalledAndKilled) {
-        resolve({ stalled: true, stderr });
-        return;
-      }
-      // stderr was already streamed live above — don't print again
-      if (code !== 0) {
-        resolve({ success: false, code, stderr });
-        return;
-      }
-      resolve({ success: true, stdout });
-    });
-
-    child.on('error', (err) => {
-      clearInterval(stallChecker);
-      resolve({ success: false, code: null, stderr, spawnError: err });
-    });
-  });
-}
-
-// --- Run Claude Code CLI with stall detection and automatic retry ---
-const STALL_TIMEOUT_MS = 3 * 60_000; // kill if no output for 3 minutes
+// --- Run Claude Code CLI ---
+// Uses spawnSync (same as checkAuth) which reliably captures output.
+// Async spawn was tried but produced zero output regardless of configuration.
+const ANALYSIS_TIMEOUT_MS = 5 * 60_000; // 5-minute hard timeout per attempt
 const MAX_ATTEMPTS = 3;
 
 async function runClaude(diff) {
@@ -289,22 +234,32 @@ async function runClaude(diff) {
       await new Promise((r) => setTimeout(r, 5_000));
     }
 
-    console.log(`   Attempt ${attempt}/${MAX_ATTEMPTS} (stall limit: ${STALL_TIMEOUT_MS / 1000}s)...`);
-    const result = await runClaudeAttempt(args, env, STALL_TIMEOUT_MS);
+    console.log(`   Attempt ${attempt}/${MAX_ATTEMPTS} (timeout: ${ANALYSIS_TIMEOUT_MS / 1000}s)...`);
 
-    if (result.stalled) {
-      console.warn(`⚠️  No output for ${STALL_TIMEOUT_MS / 1000}s — process killed.`);
-      if (attempt < MAX_ATTEMPTS) continue;
-      throw new Error(`Claude Code CLI stalled on all ${MAX_ATTEMPTS} attempts with no output.`);
+    const result = spawnSync('claude', args, {
+      encoding: 'utf-8',
+      maxBuffer: 50 * 1024 * 1024,
+      timeout: ANALYSIS_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+      env,
+    });
+
+    if (result.stderr) {
+      process.stderr.write(result.stderr);
     }
 
-    if (result.spawnError) {
-      throw new Error(`Claude Code CLI failed to start: ${result.spawnError.message}`);
+    if (result.error) {
+      if (result.error.code === 'ETIMEDOUT') {
+        console.warn(`⚠️  Process timed out after ${ANALYSIS_TIMEOUT_MS / 1000}s.`);
+        if (attempt < MAX_ATTEMPTS) continue;
+        throw new Error(`Claude Code CLI timed out on all ${MAX_ATTEMPTS} attempts.`);
+      }
+      throw new Error(`Claude Code CLI failed to start: ${result.error.message}`);
     }
 
-    if (!result.success) {
+    if (result.status !== 0) {
       throw new Error(
-        `Claude Code CLI exited with status ${result.code}` +
+        `Claude Code CLI exited with status ${result.status}` +
         (result.stderr ? ': ' + result.stderr.trim() : '')
       );
     }
