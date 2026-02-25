@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 
 import { execSync, spawnSync } from 'child_process';
-import { readFileSync, writeFileSync, mkdtempSync } from 'fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
 // --- Config ---
 const MODEL = process.env.MODEL || 'sonnet';
-const MAX_BUDGET = process.env.MAX_BUDGET || '1.00';
 const MAX_DIFF_SIZE = 200 * 1024; // 200KB
 
 // --- Read PR info from GitHub event ---
@@ -92,10 +91,10 @@ function parseDiff(diff) {
 }
 
 // --- Build the analysis prompt ---
-function buildPrompt(diff) {
+function buildPrompt(diffPath) {
   return `You are a senior software engineer performing a focused bug review on a pull request diff.
 
-TASK: Analyze the following PR diff and identify ONLY genuine bugs, logic errors, security vulnerabilities, race conditions, null/undefined dereferences, off-by-one errors, resource leaks, and other concrete defects in the ADDED or MODIFIED lines (lines starting with +).
+TASK: Read the file at "${diffPath}" — it contains a PR diff. Identify ONLY genuine bugs, logic errors, security vulnerabilities, race conditions, null/undefined dereferences, off-by-one errors, resource leaks, and other concrete defects in the ADDED or MODIFIED lines (lines starting with +).
 
 DO NOT report:
 - Style issues, naming conventions, or formatting
@@ -126,11 +125,7 @@ Respond with ONLY a JSON object (no markdown fences, no extra text) in this exac
 }
 
 Omit additional_locations or set it to [] if there are no related locations.
-If no bugs are found, return: {"bugs": [], "summary": "No bugs found in the changes."}
-
-Here is the PR diff to analyze:
-
-${diff}`;
+If no bugs are found, return: {"bugs": [], "summary": "No bugs found in the changes."}`;
 }
 
 // --- Mask a secret for safe logging (show first 12 + last 4 chars) ---
@@ -186,7 +181,7 @@ function checkAuth() {
   });
 
   if (ping.stderr) {
-    console.error('Auth check stderr:\n' + ping.stderr);
+    console.log('Auth check stderr:\n' + ping.stderr);
   }
 
   if (ping.error) {
@@ -205,20 +200,27 @@ function checkAuth() {
 }
 
 // --- Run Claude Code CLI ---
-// Uses spawnSync (same as checkAuth) which reliably captures output.
-// Async spawn was tried but produced zero output regardless of configuration.
+// Writes the diff to a temp file and passes the file path in the prompt so
+// claude reads it using its native file tool. This avoids all stdin/argument
+// size issues that caused 5-minute hangs in previous approaches.
 const ANALYSIS_TIMEOUT_MS = 5 * 60_000; // 5-minute hard timeout per attempt
 const MAX_ATTEMPTS = 3;
 
 async function runClaude(diff) {
-  const prompt = buildPrompt(diff);
+  // Write diff to a temp file — claude will read it via its file tool
+  const tmpDir = mkdtempSync(join(tmpdir(), 'bugbot-diff-'));
+  const diffPath = join(tmpDir, 'pr.diff');
+  writeFileSync(diffPath, diff, 'utf-8');
+  console.log(`   Diff written to ${diffPath} (${(Buffer.byteLength(diff) / 1024).toFixed(1)}KB)`);
+
+  const prompt = buildPrompt(diffPath);
   const args = [
     '-p', prompt,
-    '--output-format', 'json',
-    '--max-turns', '1',
+    '--output-format', 'text',   // text (not json) — avoids outer-wrapper hang
+    '--max-turns', '3',          // allow: read file turn + analysis turn
     '--dangerously-skip-permissions',
     '--model', MODEL,
-    '--max-budget-usd', MAX_BUDGET,
+    // no --max-budget-usd — unnecessary and a potential hang trigger
   ];
   const env = {
     ...process.env,
@@ -228,68 +230,62 @@ async function runClaude(diff) {
     CLAUDE_NO_TELEMETRY: '1',
   };
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    if (attempt > 1) {
-      console.log(`🔄 Retry ${attempt}/${MAX_ATTEMPTS} — waiting 5s before restart...`);
-      await new Promise((r) => setTimeout(r, 5_000));
-    }
-
-    console.log(`   Attempt ${attempt}/${MAX_ATTEMPTS} (timeout: ${ANALYSIS_TIMEOUT_MS / 1000}s)...`);
-
-    const result = spawnSync('claude', args, {
-      encoding: 'utf-8',
-      maxBuffer: 50 * 1024 * 1024,
-      timeout: ANALYSIS_TIMEOUT_MS,
-      killSignal: 'SIGKILL',
-      env,
-    });
-
-    if (result.stderr) {
-      process.stderr.write(result.stderr);
-    }
-
-    if (result.error) {
-      if (result.error.code === 'ETIMEDOUT') {
-        console.warn(`⚠️  Process timed out after ${ANALYSIS_TIMEOUT_MS / 1000}s.`);
-        if (attempt < MAX_ATTEMPTS) continue;
-        throw new Error(`Claude Code CLI timed out on all ${MAX_ATTEMPTS} attempts.`);
+  try {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      if (attempt > 1) {
+        console.log(`🔄 Retry ${attempt}/${MAX_ATTEMPTS} — waiting 5s before restart...`);
+        await new Promise((r) => setTimeout(r, 5_000));
       }
-      throw new Error(`Claude Code CLI failed to start: ${result.error.message}`);
-    }
 
-    if (result.status !== 0) {
-      throw new Error(
-        `Claude Code CLI exited with status ${result.status}` +
-        (result.stderr ? ': ' + result.stderr.trim() : '')
-      );
-    }
+      console.log(`   Attempt ${attempt}/${MAX_ATTEMPTS} (timeout: ${ANALYSIS_TIMEOUT_MS / 1000}s)...`);
 
-    return result.stdout;
+      const result = spawnSync('claude', args, {
+        encoding: 'utf-8',
+        maxBuffer: 50 * 1024 * 1024,
+        timeout: ANALYSIS_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+        env,
+      });
+
+      if (result.stderr) {
+        console.log(result.stderr);
+      }
+
+      if (result.error) {
+        if (result.error.code === 'ETIMEDOUT') {
+          console.warn(`⚠️  Process timed out after ${ANALYSIS_TIMEOUT_MS / 1000}s.`);
+          if (attempt < MAX_ATTEMPTS) continue;
+          throw new Error(`Claude Code CLI timed out on all ${MAX_ATTEMPTS} attempts.`);
+        }
+        throw new Error(`Claude Code CLI failed to start: ${result.error.message}`);
+      }
+
+      if (result.status !== 0) {
+        throw new Error(
+          `Claude Code CLI exited with status ${result.status}` +
+          (result.stderr ? ': ' + result.stderr.trim() : '')
+        );
+      }
+
+      return result.stdout;
+    }
+  } finally {
+    // Clean up temp dir regardless of success or failure
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 }
 
 // --- Parse Claude's response ---
+// With --output-format text, stdout is the raw text response (no outer wrapper).
 function parseResponse(stdout) {
-  // The --output-format json wraps the response in { result: "...", ... }
-  let outer;
+  const text = stdout.trim();
+
+  // Try direct JSON parse
   try {
-    outer = JSON.parse(stdout);
-  } catch {
-    throw new Error(`Failed to parse Claude CLI output as JSON: ${stdout.slice(0, 500)}`);
-  }
-
-  if (outer.is_error) {
-    throw new Error(`Claude returned an error: ${outer.result}`);
-  }
-
-  const resultText = outer.result;
-
-  // Try direct JSON parse of the result
-  try {
-    return JSON.parse(resultText);
+    return JSON.parse(text);
   } catch {
     // Fallback: extract JSON from code fences
-    const fenceMatch = resultText.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+    const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
     if (fenceMatch) {
       try {
         return JSON.parse(fenceMatch[1]);
@@ -299,7 +295,7 @@ function parseResponse(stdout) {
     }
 
     // Fallback: find first { ... } block
-    const braceMatch = resultText.match(/\{[\s\S]*\}/);
+    const braceMatch = text.match(/\{[\s\S]*\}/);
     if (braceMatch) {
       try {
         return JSON.parse(braceMatch[0]);
@@ -308,7 +304,7 @@ function parseResponse(stdout) {
       }
     }
 
-    throw new Error(`Could not extract JSON from Claude's response: ${resultText.slice(0, 500)}`);
+    throw new Error(`Could not extract JSON from Claude's response: ${text.slice(0, 500)}`);
   }
 }
 
@@ -601,6 +597,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(`❌ BugBot failed: ${err.message}`);
+  console.log(`❌ BugBot failed: ${err.message}`);
   process.exit(1);
 });

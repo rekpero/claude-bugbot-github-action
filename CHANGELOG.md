@@ -2,6 +2,23 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.0-beta.10] - 2026-02-25
+
+### Fixed
+
+- **Analysis timing out on all diff-passing approaches** — stdin (`spawnSync input:`), async `spawn` stdin, and embedding the full diff in `-p` all caused 5-minute hangs or zero output. Root cause: the claude CLI in non-interactive `-p` mode does not reliably consume large inputs via stdin or oversized argument strings. Fix: write the diff to a temp file and reference the path in the prompt — claude reads it via its native file tool, the same mechanism used by the auth ping that has never failed.
+
+### Changed
+
+- `buildPrompt(diffPath)` — accepts the temp file path; prompt instructs claude to read the file rather than consume stdin or a large argument
+- `runClaude(diff)` — writes diff to `mkdtempSync` temp file before spawning; no `input:` (no stdin); temp dir cleaned up in `finally` block via `rmSync`
+- `--output-format text` — switched from `json` to match the working auth ping; the `{ result, is_error }` outer wrapper is unnecessary since JSON is extracted from the response text directly
+- `--max-turns 3` — increased from `1` to allow the file-read tool call turn plus the analysis turn
+- `--max-budget-usd` removed — unnecessary and a potential hang trigger
+- `parseResponse()` simplified — removed outer `{ result, is_error }` unwrap; parses raw text response directly
+
+---
+
 ## [1.0.0-beta.9] - 2026-02-25
 
 ### Fixed
