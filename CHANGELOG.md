@@ -2,6 +2,23 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.0-beta.12] - 2026-02-25
+
+### Fixed
+
+- **Non-deterministic thread resolution** — The previous approach matched old bug threads against new analysis results using a slugified title (`file:slug-of-title`). Since Claude is non-deterministic, the same bug could be phrased differently on the next run, causing threads to be wrongly auto-resolved (false "fixed") or re-commented as duplicates. Fix: open threads are now passed to Claude in the prompt; Claude semantically determines which were fixed and returns their stable GitHub thread IDs in `resolved_thread_ids`. Resolution is no longer based on title wording.
+
+### Changed
+
+- `fetchOpenBugThreads(repo, prNumber)` — new function; fetches open BugBot review threads before running Claude and returns `[{ threadId, bugId, description }]`
+- `resolveThreads(threadIds)` — new function; resolves a list of GitHub thread node IDs via GraphQL mutation; replaces `resolveFixedThreads`
+- `buildPrompt(diffPath, openThreads)` — now accepts open threads; when present, embeds them in the prompt and instructs Claude to return `resolved_thread_ids` in its JSON response
+- `runClaude(diff, openThreads)` — passes `openThreads` through to `buildPrompt`
+- `makeBugId(bug)` — now uses `file:line` instead of `file:slugified-title`; structural and stable regardless of wording
+- `main()` — updated order: fetch open threads → run Claude → resolve fixed threads → deduplicate → post
+
+---
+
 ## [1.0.0-beta.11] - 2026-02-25
 
 ### Changed

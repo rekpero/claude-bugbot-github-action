@@ -91,8 +91,10 @@ function parseDiff(diff) {
 }
 
 // --- Build the analysis prompt ---
-function buildPrompt(diffPath) {
-  return `You are a senior software engineer performing a focused bug review on a pull request diff.
+function buildPrompt(diffPath, openThreads = []) {
+  const hasOpenThreads = openThreads.length > 0;
+
+  let prompt = `You are a senior software engineer performing a focused bug review on a pull request diff.
 
 TASK: Read the file at "${diffPath}" — it contains a PR diff. Identify ONLY genuine bugs, logic errors, security vulnerabilities, race conditions, null/undefined dereferences, off-by-one errors, resource leaks, and other concrete defects in the ADDED or MODIFIED lines (lines starting with +).
 
@@ -105,7 +107,19 @@ DO NOT report:
 
 For each bug found, determine the EXACT line number in the NEW version of the file. The line numbers can be calculated from the @@ hunk headers in the diff. For example, "@@ -10,6 +15,8 @@" means the new file starts at line 15 for that hunk.
 
-If the same bug pattern or a directly related issue also appears in OTHER files within the diff, list those in additional_locations.
+If the same bug pattern or a directly related issue also appears in OTHER files within the diff, list those in additional_locations.`;
+
+  if (hasOpenThreads) {
+    prompt += `
+
+PREVIOUSLY REPORTED OPEN BUGS: The following bugs were reported by BugBot on an earlier commit of this PR and their review threads are still open. For each one, use the diff to determine whether the new changes have fixed it.
+
+${JSON.stringify(openThreads, null, 2)}
+
+For each thread that the diff has now fixed, include its threadId in resolved_thread_ids. If a thread's bug is NOT fixed (still present or untouched by the diff), omit it from resolved_thread_ids. Do NOT re-report still-open bugs as new entries in the bugs array — they already have open threads.`;
+  }
+
+  prompt += `
 
 Respond with ONLY a JSON object (no markdown fences, no extra text) in this exact format:
 {
@@ -121,11 +135,14 @@ Respond with ONLY a JSON object (no markdown fences, no extra text) in this exac
       ]
     }
   ],
-  "summary": "Brief 1-2 sentence overall summary"
+  "summary": "Brief 1-2 sentence overall summary"${hasOpenThreads ? `,
+  "resolved_thread_ids": ["threadId1", "threadId2"]` : ''}
 }
 
 Omit additional_locations or set it to [] if there are no related locations.
-If no bugs are found, return: {"bugs": [], "summary": "No bugs found in the changes."}`;
+If no bugs are found, return: {"bugs": [], "summary": "No bugs found in the changes."${hasOpenThreads ? ', "resolved_thread_ids": []' : ''}}`;
+
+  return prompt;
 }
 
 // --- Mask a secret for safe logging (show first 12 + last 4 chars) ---
@@ -206,14 +223,14 @@ function checkAuth() {
 const ANALYSIS_TIMEOUT_MS = 10 * 60_000; // 10-minute hard timeout per attempt
 const MAX_ATTEMPTS = 3;
 
-async function runClaude(diff) {
+async function runClaude(diff, openThreads = []) {
   // Write diff to a temp file — claude will read it via its file tool
   const tmpDir = mkdtempSync(join(tmpdir(), 'bugbot-diff-'));
   const diffPath = join(tmpDir, 'pr.diff');
   writeFileSync(diffPath, diff, 'utf-8');
   console.log(`   Diff written to ${diffPath} (${(Buffer.byteLength(diff) / 1024).toFixed(1)}KB)`);
 
-  const prompt = buildPrompt(diffPath);
+  const prompt = buildPrompt(diffPath, openThreads);
   const args = [
     '-p', prompt,
     '--output-format', 'text',   // text (not json) — avoids outer-wrapper hang
@@ -337,13 +354,9 @@ function formatSummary(analysis) {
   ].join('\n');
 }
 
-// --- Stable identifier for a bug (used to match across commits) ---
-function slugify(str) {
-  return str.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-}
-
+// --- Stable identifier for a bug (file + line, avoids depending on Claude's title wording) ---
 function makeBugId(bug) {
-  return `${bug.file}:${slugify(bug.title)}`;
+  return `${bug.file}:${bug.line}`;
 }
 
 function formatInlineComment(bug, repo, headSha) {
@@ -459,15 +472,13 @@ function postFallbackComment(repo, prNumber, body) {
   }
 }
 
-// --- Manage open BugBot threads from previous runs ---
-// Requires the github-token to have pull-requests: write permission.
-// Queries open BugBot review threads, auto-resolves threads whose bug is no longer
-// detected, and returns the Set of bug IDs that still have open threads so
-// postReview can skip re-posting duplicate inline comments for them.
-function resolveFixedThreads(repo, prNumber, newBugs) {
+// --- Fetch open BugBot review threads from previous runs ---
+// Returns an array of { threadId, bugId, description } for each open BugBot thread.
+// threadId is the stable GitHub node ID used to resolve the thread via GraphQL.
+// bugId is the file:line tag embedded in the comment (used for deduplication).
+function fetchOpenBugThreads(repo, prNumber) {
   const [owner, repoName] = repo.split('/');
-  const activeBugIds = new Set(newBugs.map(b => makeBugId(b)));
-  const tmpDir = mkdtempSync(join(tmpdir(), 'bugbot-resolve-'));
+  const tmpDir = mkdtempSync(join(tmpdir(), 'bugbot-threads-'));
 
   const queryPayload = {
     query: `query($owner: String!, $repo: String!, $pr: Int!) {
@@ -491,52 +502,60 @@ function resolveFixedThreads(repo, prNumber, newBugs) {
   const queryPath = join(tmpDir, 'query.json');
   writeFileSync(queryPath, JSON.stringify(queryPayload));
 
-  let threads;
+  let rawThreads;
   try {
     const raw = execSync(`gh api graphql --input "${queryPath}"`, { encoding: 'utf-8' });
-    threads = JSON.parse(raw)?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+    rawThreads = JSON.parse(raw)?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
   } catch (err) {
-    console.warn(`⚠️ Could not fetch review threads (skipping deduplication): ${err.message}`);
-    return new Set();
+    console.warn(`⚠️ Could not fetch review threads: ${err.message}`);
+    return [];
+  } finally {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 
-  const alreadyCommentedBugIds = new Set();
-
-  for (let i = 0; i < threads.length; i++) {
-    const thread = threads[i];
+  const openThreads = [];
+  for (const thread of rawThreads) {
     if (thread.isResolved) continue;
-
     const body = thread.comments?.nodes?.[0]?.body ?? '';
-    const match = body.match(/<!-- bugbot-id:([^\s>]+) -->/);
-    if (!match) continue;
+    const idMatch = body.match(/<!-- bugbot-id:([^\s>]+) -->/);
+    if (!idMatch) continue; // not a BugBot comment
+    openThreads.push({
+      threadId: thread.id,
+      bugId: idMatch[1],
+      // Strip the hidden tag and pass the human-readable comment body to Claude
+      description: body.replace(/\n<!-- bugbot-id:[^\s>]+ -->/, '').trim(),
+    });
+  }
 
-    const bugId = match[1];
+  return openThreads;
+}
 
-    if (activeBugIds.has(bugId)) {
-      // Bug still present — record so we don't post a duplicate comment
-      alreadyCommentedBugIds.add(bugId);
-    } else {
-      // Bug fixed — resolve the thread
+// --- Resolve a list of GitHub review threads by their node IDs ---
+function resolveThreads(threadIds) {
+  if (threadIds.length === 0) return;
+  const tmpDir = mkdtempSync(join(tmpdir(), 'bugbot-resolve-'));
+  try {
+    for (let i = 0; i < threadIds.length; i++) {
       const mutationPayload = {
         query: `mutation($threadId: ID!) {
           resolveReviewThread(input: { threadId: $threadId }) {
             thread { isResolved }
           }
         }`,
-        variables: { threadId: thread.id },
+        variables: { threadId: threadIds[i] },
       };
       const mutationPath = join(tmpDir, `resolve-${i}.json`);
       writeFileSync(mutationPath, JSON.stringify(mutationPayload));
       try {
         execSync(`gh api graphql --input "${mutationPath}"`, { encoding: 'utf-8' });
-        console.log(`  ✅ Auto-resolved: ${bugId}`);
+        console.log(`  ✅ Auto-resolved thread: ${threadIds[i]}`);
       } catch (err) {
-        console.warn(`  ⚠️ Could not resolve thread for ${bugId}: ${err.message}`);
+        console.warn(`  ⚠️ Could not resolve thread ${threadIds[i]}: ${err.message}`);
       }
     }
+  } finally {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
-
-  return alreadyCommentedBugIds;
 }
 
 // --- Main ---
@@ -571,11 +590,16 @@ async function main() {
   const fileCount = validLines.size;
   console.log(`   Found changes in ${fileCount} file(s)`);
 
-  // 5. Run Claude analysis
-  console.log(`🧠 Running Claude (${MODEL}) analysis...`);
-  const stdout = await runClaude(diff);
+  // 5. Fetch open BugBot threads from previous runs (before Claude, to include in prompt)
+  console.log('🔍 Fetching open BugBot threads...');
+  const openThreads = fetchOpenBugThreads(pr.repo, pr.number);
+  console.log(`   Found ${openThreads.length} open thread(s) from previous runs`);
 
-  // 6. Parse response
+  // 6. Run Claude analysis (open threads included so it can determine what's fixed)
+  console.log(`🧠 Running Claude (${MODEL}) analysis...`);
+  const stdout = await runClaude(diff, openThreads);
+
+  // 7. Parse response
   console.log('📊 Parsing results...');
   const analysis = parseResponse(stdout);
 
@@ -585,11 +609,20 @@ async function main() {
 
   console.log(`   Found ${analysis.bugs.length} potential bug(s)`);
 
-  // 7. Resolve fixed threads and get already-commented bug IDs to suppress duplicates
-  console.log('🔄 Checking for resolved issues...');
-  const alreadyCommentedBugIds = resolveFixedThreads(pr.repo, pr.number, analysis.bugs);
+  // 8. Resolve threads Claude says are fixed
+  const resolvedIds = Array.isArray(analysis.resolved_thread_ids) ? analysis.resolved_thread_ids : [];
+  if (resolvedIds.length > 0) {
+    console.log(`🔄 Resolving ${resolvedIds.length} fixed thread(s)...`);
+    resolveThreads(resolvedIds);
+  }
 
-  // 8. Post review for new / still-present bugs
+  // 9. Build deduplication set: still-open threads whose bug shouldn't get a new comment
+  const resolvedSet = new Set(resolvedIds);
+  const alreadyCommentedBugIds = new Set(
+    openThreads.filter(t => !resolvedSet.has(t.threadId)).map(t => t.bugId)
+  );
+
+  // 10. Post review for new bugs
   console.log('💬 Posting PR review...');
   postReview(pr.repo, pr.number, pr.headSha, analysis, validLines, alreadyCommentedBugIds);
 
