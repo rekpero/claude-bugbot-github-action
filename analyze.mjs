@@ -234,7 +234,6 @@ async function runClaude(diff, openThreads = []) {
   const args = [
     '-p', prompt,
     '--output-format', 'text',   // text (not json) — avoids outer-wrapper hang
-    '--max-turns', '3',          // allow: read file turn + analysis turn
     '--dangerously-skip-permissions',
     '--model', MODEL,
     // no --max-budget-usd — unnecessary and a potential hang trigger

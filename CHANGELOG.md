@@ -2,6 +2,14 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.1] - 2026-02-27
+
+### Changed
+
+- **Removed `--max-turns` limit** — The `--max-turns 3` cap on Claude's analysis run has been removed. Complex diffs require multiple tool call rounds (file reads, multi-step reasoning); capping at 3 turns caused premature termination with `Reached max turns` errors and incomplete JSON output.
+
+---
+
 ## [1.0.0] - 2026-02-26
 
 First stable release of Claude BugBot. The beta cycle hardened auth, diff delivery, CI environment compatibility, and thread lifecycle management. This release represents the production-ready state of all those subsystems.
