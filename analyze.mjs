@@ -112,11 +112,18 @@ If the same bug pattern or a directly related issue also appears in OTHER files 
   if (hasOpenThreads) {
     prompt += `
 
-PREVIOUSLY REPORTED OPEN BUGS: The following bugs were reported by BugBot on an earlier commit of this PR and their review threads are still open. For each one, use the diff to determine whether the new changes have fixed it.
+PREVIOUSLY REPORTED OPEN BUGS: The following bugs were reported by BugBot on an earlier commit of this PR and their review threads are still open. For each one, determine whether it has been fixed.
 
 ${JSON.stringify(openThreads, null, 2)}
 
-For each thread that the diff has now fixed, include its threadId in resolved_thread_ids. If a thread's bug is NOT fixed (still present or untouched by the diff), omit it from resolved_thread_ids. Do NOT re-report still-open bugs as new entries in the bugs array — they already have open threads.`;
+Resolution rules:
+1. If the bug's file appears in the diff and the bug is clearly still present → omit its threadId from resolved_thread_ids.
+2. If the bug's file appears in the diff and the bug has been fixed → include its threadId in resolved_thread_ids.
+3. If the bug's file does NOT appear in the diff, use broader judgment: if the PR addresses the root cause elsewhere (e.g. a shared function, a caller, a config) or if no related code path looks broken, include its threadId in resolved_thread_ids.
+
+IMPORTANT: resolved_thread_ids must contain the "threadId" field value (the GitHub GraphQL node ID, e.g. "PRRT_kwDO...") — NOT the "bugId" field value.
+
+Do NOT re-report still-open bugs as new entries in the bugs array — they already have open threads.`;
   }
 
   prompt += `
@@ -136,11 +143,13 @@ Respond with ONLY a JSON object (no markdown fences, no extra text) in this exac
     }
   ],
   "summary": "Brief 1-2 sentence overall summary"${hasOpenThreads ? `,
-  "resolved_thread_ids": ["threadId1", "threadId2"]` : ''}
+  "resolved_thread_ids": ["<threadId of each thread now fixed>"]` : ''}
 }
 
 Omit additional_locations or set it to [] if there are no related locations.
-If no bugs are found, return: {"bugs": [], "summary": "No bugs found in the changes."${hasOpenThreads ? ', "resolved_thread_ids": []' : ''}}`;
+If no bugs are found, return: {"bugs": [], "summary": "No bugs found in the changes."${hasOpenThreads ? `, "resolved_thread_ids": ["<threadId of each thread now fixed — [] only if none are fixed>"]` : ''}}${hasOpenThreads ? `
+
+Note: when there are previously-reported open threads, resolved_thread_ids must ALWAYS be present and list every thread whose bug is now fixed. Do not default to an empty list just because no new bugs were found — evaluate each open thread independently.` : ''}`;
 
   return prompt;
 }

@@ -2,6 +2,18 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.2] - 2026-02-27
+
+### Fixed
+
+- **Open threads not resolved when PR has no new bugs** — When Claude reported no new bugs (`bugs: []`), the "no bugs found" example template in the prompt showed `"resolved_thread_ids": []`, causing Claude to copy it verbatim and return an empty list regardless of whether previously-reported bugs were actually fixed. The template now shows a semantic placeholder (`"<threadId of each thread now fixed>"`) and adds an explicit note that `resolved_thread_ids` must be evaluated independently of `bugs` — an empty `bugs` array is not a reason to leave `resolved_thread_ids` empty.
+
+- **Threads not resolved when fixed file is absent from the diff** — The prompt instruction "if a thread's bug is untouched by the diff, omit it from `resolved_thread_ids`" caused Claude to conservatively skip resolution whenever the bug's file did not appear in the diff (e.g. a bug fixed indirectly via a shared function or caller). Resolution rules are now explicit: if the bug's file is in the diff and the bug is gone → resolve; if the file is in the diff and the bug remains → keep open; if the file is NOT in the diff, use broader judgment and resolve if the PR addresses the root cause elsewhere or nothing related looks broken.
+
+- **Silent failure when Claude returned `bugId` instead of `threadId`** — The `resolved_thread_ids` field in the prompt schema used placeholder names (`"threadId1"`, `"threadId2"`) that did not distinguish between the `threadId` (GitHub GraphQL node ID, e.g. `PRRT_kwDO...`) and `bugId` (`file:line`) fields present in the open-threads JSON. Claude occasionally placed `bugId` values in `resolved_thread_ids`, causing the `resolveReviewThread` GraphQL mutation to fail silently (logged as `console.warn`). The prompt now explicitly states: `resolved_thread_ids must contain the "threadId" field value (the GitHub GraphQL node ID, e.g. "PRRT_kwDO...") — NOT the "bugId" field value.`
+
+---
+
 ## [1.0.1] - 2026-02-27
 
 ### Changed
