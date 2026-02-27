@@ -2,6 +2,25 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.3] - 2026-02-27
+
+### Changed
+
+- **Bugs with unmappable lines are now always posted as inline comments** — Previously, any bug whose exact line was not present in the diff was appended as plain text to the review body under "Additional findings". This made them invisible in the Files Changed tab and impossible for BugBot to auto-resolve later (no review thread was created). Now all bugs are always posted as inline comments:
+  - If the bug's exact line is in the diff → normal inline comment at that line (unchanged).
+  - If the bug's file is in the diff but the exact line is not → comment anchored to the **first valid line of that file**, with a note: *"Could not locate exact line in the diff. The bug is at `file:line`."*
+  - If the bug's file is not in the diff at all → comment anchored to the **first valid line of the first file in the diff**, with a note: *"This file is not part of this PR's diff. The bug is at `file:line`."*
+  - In all cases the hidden `<!-- bugbot-id:file:line -->` tag uses the **real** bug location, so deduplication and auto-resolution work correctly on subsequent commits.
+  - The "Additional findings" section in the review body has been removed entirely.
+
+- **Resolution prompt hardened for anchored threads** — The Claude prompt now explicitly states that `bugId` always reflects the real bug location regardless of where the review thread is anchored. This prevents Claude from evaluating resolution based on the anchor file instead of the actual file where the bug lives.
+
+### Fixed
+
+- **`Infinity` line number crash when first diff file is deletion-only** — The last-resort anchor (used when a bug's file is absent from the diff) was computed with `Math.min(...validLines.get(firstFile))`. If the first file in the diff had only deleted lines, its valid-lines Set was empty, causing `Math.min()` to return `Infinity`. The GitHub API rejected this with an error. Fixed by iterating `validLines` to find the first file that has at least one valid commentable line before computing the anchor.
+
+---
+
 ## [1.0.2] - 2026-02-27
 
 ### Fixed
@@ -29,7 +48,7 @@ First stable release of Claude BugBot. The beta cycle hardened auth, diff delive
 ### Features
 
 - **Automated bug detection** — Uses Claude Code CLI to analyze PR diffs for bugs, logic errors, security vulnerabilities, race conditions, null/undefined dereferences, off-by-one errors, and resource leaks. Only added/modified lines are analyzed — no noise from unchanged code.
-- **Inline PR review comments** — Findings are posted directly on the affected diff lines in the GitHub review interface, with severity-coded emoji (🔴 critical, 🟠 high, 🟡 medium, 🔵 low). Bugs that cannot be mapped to a diff line fall back to a summary section in the review body.
+- **Inline PR review comments** — Findings are posted directly on the affected diff lines in the GitHub review interface, with severity-coded emoji (🔴 critical, 🟠 high, 🟡 medium, 🔵 low). Bugs that cannot be mapped to their exact diff line are anchored to the nearest commentable line in the same file (or the first file in the diff), with a note pointing to the real location.
 - **Semantic thread resolution** — On each new commit, open BugBot threads from previous runs are fetched and passed to Claude alongside the new diff. Claude semantically determines which bugs were fixed and returns their GitHub thread IDs in `resolved_thread_ids`. Resolved threads are auto-dismissed via the GraphQL `resolveReviewThread` mutation. This is robust to Claude rephrasing bug titles across runs.
 - **Duplicate suppression** — Bugs that still have an open thread from a previous run are skipped when posting the new review, so the same issue is never commented twice.
 - **Additional locations** — When a bug pattern appears in multiple files within the diff, all locations are listed in the inline comment with clickable GitHub links to the exact line.

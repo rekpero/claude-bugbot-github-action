@@ -117,9 +117,11 @@ PREVIOUSLY REPORTED OPEN BUGS: The following bugs were reported by BugBot on an 
 ${JSON.stringify(openThreads, null, 2)}
 
 Resolution rules:
-1. If the bug's file appears in the diff and the bug is clearly still present → omit its threadId from resolved_thread_ids.
-2. If the bug's file appears in the diff and the bug has been fixed → include its threadId in resolved_thread_ids.
-3. If the bug's file does NOT appear in the diff, use broader judgment: if the PR addresses the root cause elsewhere (e.g. a shared function, a caller, a config) or if no related code path looks broken, include its threadId in resolved_thread_ids.
+Always use the "bugId" field (format: "file:line") to identify the real bug location — NOT the GitHub thread anchor, which may differ when the bug's file was not in the diff at the time of reporting.
+
+1. If the bug's file (from bugId) appears in the diff and the bug is clearly still present → omit its threadId from resolved_thread_ids.
+2. If the bug's file (from bugId) appears in the diff and the bug has been fixed → include its threadId in resolved_thread_ids.
+3. If the bug's file (from bugId) does NOT appear in the diff, use broader judgment: if the PR addresses the root cause elsewhere (e.g. a shared function, a caller, a config) or if no related code path looks broken, include its threadId in resolved_thread_ids.
 
 IMPORTANT: resolved_thread_ids must contain the "threadId" field value (the GitHub GraphQL node ID, e.g. "PRRT_kwDO...") — NOT the "bugId" field value.
 
@@ -367,7 +369,7 @@ function makeBugId(bug) {
   return `${bug.file}:${bug.line}`;
 }
 
-function formatInlineComment(bug, repo, headSha) {
+function formatInlineComment(bug, repo, headSha, { isOrphan = false, fileMissing = false } = {}) {
   const severityEmoji = {
     critical: '🔴',
     high: '🟠',
@@ -377,6 +379,14 @@ function formatInlineComment(bug, repo, headSha) {
   const emoji = severityEmoji[bug.severity] || '⚪';
 
   let comment = `${emoji} **${bug.severity.toUpperCase()}**: ${bug.title}\n\n${bug.description}`;
+
+  if (fileMissing) {
+    const fileUrl = `https://github.com/${repo}/blob/${headSha}/${bug.file}#L${bug.line}`;
+    comment += `\n\n> ⚠️ *This file is not part of this PR's diff. The bug is at [\`${bug.file}:${bug.line}\`](${fileUrl}).*`;
+  } else if (isOrphan) {
+    const fileUrl = `https://github.com/${repo}/blob/${headSha}/${bug.file}#L${bug.line}`;
+    comment += `\n\n> ⚠️ *Could not locate exact line in the diff. The bug is at [\`${bug.file}:${bug.line}\`](${fileUrl}).*`;
+  }
 
   // Additional locations
   if (bug.additional_locations && bug.additional_locations.length > 0) {
@@ -398,36 +408,57 @@ function formatInlineComment(bug, repo, headSha) {
 function postReview(repo, prNumber, headSha, analysis, validLines, alreadyCommentedBugIds) {
   const { bugs } = analysis;
 
-  // Split bugs into inline-commentable and non-commentable,
-  // skipping any that already have an open thread (to avoid duplicates)
+  // All bugs are posted as inline comments — no review body fallback.
+  // Skipping any that already have an open thread (to avoid duplicates).
   const inlineComments = [];
-  const orphanBugs = [];
+
+  // First file in the diff (with at least one valid line) is the last-resort anchor
+  // when a bug's file isn't in the diff at all. We skip files with empty Sets because
+  // Math.min() on an empty spread returns Infinity which the GitHub API rejects.
+  let firstDiffFile = null;
+  let firstDiffFileAnchorLine = null;
+  for (const [file, lines] of validLines) {
+    if (lines.size > 0) {
+      firstDiffFile = file;
+      firstDiffFileAnchorLine = Math.min(...lines);
+      break;
+    }
+  }
 
   for (const bug of bugs) {
     if (alreadyCommentedBugIds.has(makeBugId(bug))) continue;
     const fileLines = validLines.get(bug.file);
     if (fileLines && fileLines.has(bug.line)) {
+      // Exact line is in the diff — normal inline comment
       inlineComments.push({
         path: bug.file,
         line: bug.line,
         side: 'RIGHT',
         body: formatInlineComment(bug, repo, headSha),
       });
-    } else {
-      orphanBugs.push(bug);
+    } else if (fileLines && fileLines.size > 0) {
+      // File is in the diff but the exact line isn't — anchor to first valid line in the file
+      const anchorLine = Math.min(...fileLines);
+      inlineComments.push({
+        path: bug.file,
+        line: anchorLine,
+        side: 'RIGHT',
+        body: formatInlineComment(bug, repo, headSha, { isOrphan: true }),
+      });
+    } else if (firstDiffFile && firstDiffFileAnchorLine !== null) {
+      // Bug's file is not in the diff at all — anchor to first line of first file in the diff
+      inlineComments.push({
+        path: firstDiffFile,
+        line: firstDiffFileAnchorLine,
+        side: 'RIGHT',
+        body: formatInlineComment(bug, repo, headSha, { fileMissing: true }),
+      });
     }
+    // If the diff is somehow empty, silently skip (shouldn't happen — checked earlier)
   }
 
-  // Build summary body, including any orphan bugs
-  let body = formatSummary(analysis);
-
-  if (orphanBugs.length > 0) {
-    body += '\n\n### Additional findings (could not map to diff lines)\n';
-    for (const bug of orphanBugs) {
-      const emoji = { critical: '🔴', high: '🟠', medium: '🟡', low: '🔵' }[bug.severity] || '⚪';
-      body += `\n- ${emoji} **${bug.file}:${bug.line}** — ${bug.title}: ${bug.description}`;
-    }
-  }
+  // Build summary body (bug details are always in inline comments, never in the body)
+  const body = formatSummary(analysis);
 
   // Build review payload
   const review = {
