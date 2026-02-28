@@ -2,6 +2,16 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.4] - 2026-02-28
+
+### Fixed
+
+- **JSON parse failures now trigger retries instead of immediate CI failure** — Claude Code CLI occasionally responds with natural-language preamble (e.g. `"After reading through the full diff, here is my analysis:"`) instead of the requested bare JSON, causing `parseResponse` to throw `"Could not extract JSON from Claude's response"`. Previously this error propagated straight to the top-level handler and failed the job. `parseResponse` is now called inside the `runClaude` retry loop: if parsing fails on an attempt, a warning is logged and the full Claude invocation is retried up to `MAX_ATTEMPTS` (3) times before giving up.
+
+- **BugBot analysis failure no longer fails the CI job** — The top-level `main().catch()` handler previously called `process.exit(1)`, causing the GitHub Actions job to report `Process completed with exit code 1` and block the PR status check whenever BugBot encountered any unrecoverable error. Changed to `process.exit(0)` so a BugBot failure is visible in the logs but does not mark the job as failed or block merging.
+
+---
+
 ## [1.0.3] - 2026-02-27
 
 ### Changed

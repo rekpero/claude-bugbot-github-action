@@ -294,7 +294,17 @@ async function runClaude(diff, openThreads = []) {
         );
       }
 
-      return result.stdout;
+      // Try to parse the response — retry if Claude returned non-JSON output
+      try {
+        return parseResponse(result.stdout);
+      } catch (parseErr) {
+        console.warn(`⚠️  ${parseErr.message}`);
+        if (attempt < MAX_ATTEMPTS) {
+          console.warn(`   Claude returned non-JSON output. Retrying...`);
+          continue;
+        }
+        throw parseErr;
+      }
     }
   } finally {
     // Clean up temp dir regardless of success or failure
@@ -636,11 +646,8 @@ async function main() {
 
   // 6. Run Claude analysis (open threads included so it can determine what's fixed)
   console.log(`🧠 Running Claude (${MODEL}) analysis...`);
-  const stdout = await runClaude(diff, openThreads);
-
-  // 7. Parse response
   console.log('📊 Parsing results...');
-  const analysis = parseResponse(stdout);
+  const analysis = await runClaude(diff, openThreads);
 
   if (!analysis.bugs || !Array.isArray(analysis.bugs)) {
     throw new Error('Invalid response format: missing bugs array');
@@ -670,5 +677,6 @@ async function main() {
 
 main().catch((err) => {
   console.log(`❌ BugBot failed: ${err.message}`);
-  process.exit(1);
+  // Exit 0 so a BugBot analysis failure doesn't block the PR / fail the CI job.
+  process.exit(0);
 });
