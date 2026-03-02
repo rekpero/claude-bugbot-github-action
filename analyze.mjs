@@ -231,7 +231,7 @@ function checkAuth() {
 // Writes the diff to a temp file and passes the file path in the prompt so
 // claude reads it using its native file tool. This avoids all stdin/argument
 // size issues that caused 5-minute hangs in previous approaches.
-const ANALYSIS_TIMEOUT_MS = 10 * 60_000; // 10-minute hard timeout per attempt
+const ANALYSIS_TIMEOUT_MS = 30 * 60_000; // 30-minute hard timeout per attempt
 const MAX_ATTEMPTS = 3;
 
 async function runClaude(diff, openThreads = []) {

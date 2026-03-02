@@ -2,6 +2,14 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.5] - 2026-03-02
+
+### Changed
+
+- **Analysis timeout raised from 10 minutes to 30 minutes** — `ANALYSIS_TIMEOUT_MS` increased from `10 * 60_000` to `30 * 60_000`. Large or complex diffs can legitimately require more than 10 minutes for Claude to fully analyze; the previous limit caused premature SIGKILL and retry cycles on heavier PRs.
+
+---
+
 ## [1.0.4] - 2026-02-28
 
 ### Fixed
