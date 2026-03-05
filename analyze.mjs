@@ -37,8 +37,36 @@ function fetchDiff(prNumber) {
     });
     return diff;
   } catch (err) {
+    // GitHub returns 406 when PR has >300 files — fall back to paginated files API
+    if (err.message.includes('too_large') || err.message.includes('406')) {
+      console.warn('⚠️  PR diff too large (>300 files), falling back to paginated files API...');
+      return fetchDiffViaFilesAPI(prNumber);
+    }
     throw new Error(`Failed to fetch PR diff: ${err.message}`);
   }
+}
+
+// --- Fallback: reconstruct unified diff from the paginated PR files API ---
+// Used when the PR has >300 changed files (GitHub's limit for the diff endpoint).
+function fetchDiffViaFilesAPI(prNumber) {
+  const repo = process.env.GITHUB_REPOSITORY;
+  const raw = execSync(
+    `gh api repos/${repo}/pulls/${prNumber}/files --paginate`,
+    { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }
+  );
+
+  // gh --paginate concatenates JSON arrays, so we need to merge them
+  const files = JSON.parse(raw.trim().replace(/\]\s*\[/g, ','));
+
+  let allPatches = '';
+  for (const file of files) {
+    if (!file.patch) continue; // binary file or individual file too large for GitHub to diff
+    allPatches += `diff --git a/${file.filename} b/${file.filename}\n`;
+    allPatches += `--- a/${file.filename}\n`;
+    allPatches += `+++ b/${file.filename}\n`;
+    allPatches += file.patch + '\n';
+  }
+  return allPatches;
 }
 
 // --- Parse diff to extract valid commentable lines per file ---

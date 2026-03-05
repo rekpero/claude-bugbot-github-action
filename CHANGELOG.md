@@ -2,6 +2,14 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.6] - 2026-03-05
+
+### Fixed
+
+- **PRs with more than 300 changed files no longer crash BugBot** — `gh pr diff` calls the GitHub diff endpoint which returns HTTP 406 (`too_large`) when a PR touches more than 300 files. Previously this caused an unhandled error and BugBot would exit without analysis. Now `fetchDiff` catches the 406/`too_large` error and automatically falls back to `fetchDiffViaFilesAPI`, which uses the paginated `GET /repos/{owner}/{repo}/pulls/{number}/files` API (supporting up to 3 000 files). Each file's `patch` field is reassembled into standard unified diff format so all downstream parsing (`parseDiff`, inline comment placement, etc.) continues to work without modification. Binary files and individual files whose patch GitHub cannot produce are silently skipped, consistent with the existing diff-truncation behaviour.
+
+---
+
 ## [1.0.5] - 2026-03-02
 
 ### Changed
