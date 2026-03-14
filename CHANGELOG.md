@@ -2,6 +2,14 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.8] - 2026-03-15
+
+### Fixed
+
+- **Large diffs are no longer truncated to 200KB** — The 200KB truncation limit was added when the diff was passed inline in the prompt. Since the diff is now written to a temp file and Claude reads it via file I/O, the context-window concern no longer applies. Removed `MAX_DIFF_SIZE` and the truncation block so Claude always analyzes the full diff.
+
+---
+
 ## [1.0.7] - 2026-03-15
 
 ### Fixed

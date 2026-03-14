@@ -7,7 +7,6 @@ import { tmpdir } from 'os';
 
 // --- Config ---
 const MODEL = process.env.MODEL || 'sonnet';
-const MAX_DIFF_SIZE = 200 * 1024; // 200KB
 
 // --- Read PR info from GitHub event ---
 function getPRInfo() {
@@ -666,13 +665,7 @@ async function main() {
     return;
   }
 
-  // 3. Size check
-  if (Buffer.byteLength(diff) > MAX_DIFF_SIZE) {
-    console.warn(`⚠️ Diff is ${(Buffer.byteLength(diff) / 1024).toFixed(0)}KB, truncating to ${MAX_DIFF_SIZE / 1024}KB`);
-    diff = diff.slice(0, MAX_DIFF_SIZE) + '\n\n[... diff truncated due to size ...]';
-  }
-
-  // 4. Parse diff for valid lines
+  // 3. Parse diff for valid lines
   console.log('🔍 Parsing diff...');
   const validLines = parseDiff(diff);
   const fileCount = validLines.size;
