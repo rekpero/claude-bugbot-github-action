@@ -2,6 +2,14 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.7] - 2026-03-15
+
+### Fixed
+
+- **Review threads beyond the first 100 are no longer silently missed** — `fetchOpenBugThreads` previously fetched review threads with `first: 100` and no pagination, so PRs with more than 100 threads would silently drop any threads past the first page. This caused BugBot to re-post comments it had already posted (failing deduplication) and miss threads it should have resolved. The query now uses cursor-based pagination (`after: $cursor` + `pageInfo { hasNextPage endCursor }`) and loops until all pages are fetched, accumulating threads across pages before filtering for open BugBot comments.
+
+---
+
 ## [1.0.6] - 2026-03-05
 
 ### Fixed

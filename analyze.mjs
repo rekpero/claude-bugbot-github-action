@@ -557,11 +557,10 @@ function fetchOpenBugThreads(repo, prNumber) {
   const [owner, repoName] = repo.split('/');
   const tmpDir = mkdtempSync(join(tmpdir(), 'bugbot-threads-'));
 
-  const queryPayload = {
-    query: `query($owner: String!, $repo: String!, $pr: Int!) {
+  const paginatedQuery = `query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
       repository(owner: $owner, name: $repo) {
         pullRequest(number: $pr) {
-          reviewThreads(first: 100) {
+          reviewThreads(first: 100, after: $cursor) {
             nodes {
               id
               isResolved
@@ -569,20 +568,32 @@ function fetchOpenBugThreads(repo, prNumber) {
                 nodes { body }
               }
             }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
           }
         }
       }
-    }`,
-    variables: { owner, repo: repoName, pr: prNumber },
-  };
+    }`;
 
-  const queryPath = join(tmpDir, 'query.json');
-  writeFileSync(queryPath, JSON.stringify(queryPayload));
-
-  let rawThreads;
+  let rawThreads = [];
+  let cursor = null;
+  let page = 0;
   try {
-    const raw = execSync(`gh api graphql --input "${queryPath}"`, { encoding: 'utf-8' });
-    rawThreads = JSON.parse(raw)?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+    do {
+      const queryPayload = {
+        query: paginatedQuery,
+        variables: { owner, repo: repoName, pr: prNumber, cursor },
+      };
+      const queryPath = join(tmpDir, `query-${page}.json`);
+      writeFileSync(queryPath, JSON.stringify(queryPayload));
+      const raw = execSync(`gh api graphql --input "${queryPath}"`, { encoding: 'utf-8' });
+      const reviewThreads = JSON.parse(raw)?.data?.repository?.pullRequest?.reviewThreads;
+      rawThreads = rawThreads.concat(reviewThreads?.nodes ?? []);
+      cursor = reviewThreads?.pageInfo?.hasNextPage ? reviewThreads.pageInfo.endCursor : null;
+      page++;
+    } while (cursor);
   } catch (err) {
     console.warn(`⚠️ Could not fetch review threads: ${err.message}`);
     return [];
