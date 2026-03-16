@@ -2,6 +2,14 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.9] - 2026-03-16
+
+### Changed
+
+- **`.github/` directory excluded from bug analysis** — Files under `.github/` (GitHub Actions workflows, configs, etc.) are now stripped from the diff before BugBot analyzes it. These are infrastructure files, not application code, and flagging bugs in them is noise. Exclusions are driven by a top-level `EXCLUDED_PATH_PREFIXES` list in `analyze.mjs` — add entries there to exclude additional directories as needed.
+
+---
+
 ## [1.0.8] - 2026-03-15
 
 ### Fixed

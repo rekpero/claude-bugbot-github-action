@@ -8,6 +8,13 @@ import { tmpdir } from 'os';
 // --- Config ---
 const MODEL = process.env.MODEL || 'sonnet';
 
+// --- Paths excluded from bug analysis ---
+// Files whose paths start with any of these prefixes are stripped from the diff
+// before BugBot sees it. Add more entries here as new cases are discovered.
+const EXCLUDED_PATH_PREFIXES = [
+  '.github/', // GitHub Actions workflows and configs — not application code
+];
+
 // --- Read PR info from GitHub event ---
 function getPRInfo() {
   const eventPath = process.env.GITHUB_EVENT_PATH;
@@ -60,12 +67,28 @@ function fetchDiffViaFilesAPI(prNumber) {
   let allPatches = '';
   for (const file of files) {
     if (!file.patch) continue; // binary file or individual file too large for GitHub to diff
+    if (EXCLUDED_PATH_PREFIXES.some(prefix => file.filename.startsWith(prefix))) continue;
     allPatches += `diff --git a/${file.filename} b/${file.filename}\n`;
     allPatches += `--- a/${file.filename}\n`;
     allPatches += `+++ b/${file.filename}\n`;
     allPatches += file.patch + '\n';
   }
   return allPatches;
+}
+
+// --- Strip excluded paths from a unified diff string ---
+// Splits on "diff --git" section boundaries and drops any section whose file
+// path starts with one of the EXCLUDED_PATH_PREFIXES entries.
+function filterDiff(diff) {
+  if (EXCLUDED_PATH_PREFIXES.length === 0) return diff;
+  const sections = diff.split(/(?=^diff --git )/m);
+  return sections
+    .filter(section => {
+      const match = section.match(/^diff --git a\/(.+) b\//);
+      if (!match) return true; // keep preamble / unparseable sections
+      return !EXCLUDED_PATH_PREFIXES.some(prefix => match[1].startsWith(prefix));
+    })
+    .join('');
 }
 
 // --- Parse diff to extract valid commentable lines per file ---
@@ -658,7 +681,7 @@ async function main() {
 
   // 2. Fetch diff
   console.log('📥 Fetching PR diff...');
-  let diff = fetchDiff(pr.number);
+  let diff = filterDiff(fetchDiff(pr.number));
 
   if (!diff.trim()) {
     console.log('ℹ️ Empty diff, nothing to analyze.');
