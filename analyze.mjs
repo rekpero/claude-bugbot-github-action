@@ -148,6 +148,8 @@ function buildPrompt(diffPath, openThreads = []) {
 
 TASK: Read the file at "${diffPath}" — it contains a PR diff. Identify ONLY genuine bugs, logic errors, security vulnerabilities, race conditions, null/undefined dereferences, off-by-one errors, resource leaks, and other concrete defects in the ADDED or MODIFIED lines (lines starting with +).
 
+IMPORTANT: You have access to the full codebase in the current working directory. Use it only for targeted lookups to verify specific things referenced in the diff — for example, if a function call in the diff looks wrong, read only the file that defines it to confirm the signature. Do NOT browse or scan the codebase broadly. Only look up what is directly referenced by the changed lines. Only report a bug if you are confident it is a real defect after verification. This prevents false positives caused by incomplete diff context.
+
 DO NOT report:
 - Style issues, naming conventions, or formatting
 - Missing documentation or comments
@@ -321,6 +323,7 @@ async function runClaude(diff, openThreads = []) {
         maxBuffer: 50 * 1024 * 1024,
         timeout: ANALYSIS_TIMEOUT_MS,
         killSignal: 'SIGKILL',
+        cwd: process.env.GITHUB_WORKSPACE || process.cwd(),
         env,
       });
 

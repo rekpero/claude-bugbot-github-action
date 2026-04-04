@@ -2,6 +2,14 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.10] - 2026-04-04
+
+### Changed
+
+- **Full codebase available for targeted verification** — Claude now runs with its working directory set to `GITHUB_WORKSPACE` (the checked-out repo root) and is instructed to use its file-reading tools to verify findings against the actual source before reporting a bug. For example, if a function call in the diff looks wrong, Claude reads the file that defines it to confirm the signature. Lookups are explicitly scoped to things directly referenced by the changed lines — broad codebase scanning is prohibited. This reduces false positives caused by incomplete diff context (e.g. flagging a function as missing when it exists outside the diff).
+
+---
+
 ## [1.0.9] - 2026-03-16
 
 ### Changed
