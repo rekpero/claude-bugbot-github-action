@@ -36,36 +36,57 @@ function getPRInfo() {
 
 // --- Fetch PR diff ---
 function fetchDiff(prNumber) {
-  try {
-    const diff = execSync(`gh pr diff ${prNumber}`, {
-      encoding: 'utf-8',
-      maxBuffer: 50 * 1024 * 1024, // 50MB buffer
-    });
-    return diff;
-  } catch (err) {
-    // GitHub returns 406 when PR has >300 files — fall back to paginated files API
-    if (err.message.includes('too_large') || err.message.includes('406')) {
-      console.warn('⚠️  PR diff too large (>300 files), falling back to paginated files API...');
-      return fetchDiffViaFilesAPI(prNumber);
-    }
-    throw new Error(`Failed to fetch PR diff: ${err.message}`);
+  const result = spawnSync('gh', ['pr', 'diff', String(prNumber)], {
+    encoding: 'utf-8',
+    maxBuffer: 50 * 1024 * 1024, // 50MB buffer
+  });
+
+  if (result.error) {
+    throw new Error(`Failed to spawn gh: ${result.error.message}`);
   }
+  if (result.status === 0) return result.stdout;
+
+  const stderr = result.stderr || '';
+  // GitHub returns 406 when PR has >300 files — fall back to paginated files API
+  if (stderr.includes('too_large') || stderr.includes('406')) {
+    console.warn('⚠️  PR diff too large (>300 files), falling back to paginated files API...');
+    return fetchDiffViaFilesAPI(prNumber);
+  }
+  throw new Error(`Failed to fetch PR diff (exit ${result.status}): ${stderr.trim()}`);
 }
 
 // --- Fallback: reconstruct unified diff from the paginated PR files API ---
 // Used when the PR has >300 changed files (GitHub's limit for the diff endpoint).
+// We page explicitly instead of using `gh api --paginate`, which concatenates JSON
+// arrays as `[...][...]` and is conventionally re-parsed via `replace(/]\s*\[/g, ',')`
+// — that regex corrupts data when a patch happens to contain `]` adjacent to `[`.
 function fetchDiffViaFilesAPI(prNumber) {
   const repo = process.env.GITHUB_REPOSITORY;
-  const raw = execSync(
-    `gh api repos/${repo}/pulls/${prNumber}/files --paginate`,
-    { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }
-  );
+  const perPage = 100; // GitHub's max per page
+  const allFiles = [];
 
-  // gh --paginate concatenates JSON arrays, so we need to merge them
-  const files = JSON.parse(raw.trim().replace(/\]\s*\[/g, ','));
+  for (let page = 1; ; page++) {
+    const result = spawnSync('gh', [
+      'api', `repos/${repo}/pulls/${prNumber}/files?per_page=${perPage}&page=${page}`,
+    ], { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 });
+
+    if (result.error) {
+      throw new Error(`Failed to spawn gh: ${result.error.message}`);
+    }
+    if (result.status !== 0) {
+      throw new Error(
+        `Failed to fetch PR files page ${page} (exit ${result.status}): ${(result.stderr || '').trim()}`
+      );
+    }
+
+    const pageFiles = JSON.parse(result.stdout);
+    if (!Array.isArray(pageFiles) || pageFiles.length === 0) break;
+    allFiles.push(...pageFiles);
+    if (pageFiles.length < perPage) break;
+  }
 
   let allPatches = '';
-  for (const file of files) {
+  for (const file of allFiles) {
     if (!file.patch) continue; // binary file or individual file too large for GitHub to diff
     if (EXCLUDED_PATH_PREFIXES.some(prefix => file.filename.startsWith(prefix))) continue;
     allPatches += `diff --git a/${file.filename} b/${file.filename}\n`;
@@ -92,26 +113,40 @@ function filterDiff(diff) {
 }
 
 // --- Parse diff to extract valid commentable lines per file ---
-// Returns: Map<string, Set<number>> mapping file paths to valid RIGHT-side line numbers
+// Returns: Map<string, Set<number>> mapping file paths to valid RIGHT-side line numbers.
+// We track whether we're in a hunk so a content line that happens to start with
+// "+++ b/" (e.g. someone adding a literal diff snippet to a doc) isn't misread as
+// a file header.
 function parseDiff(diff) {
   const validLines = new Map();
   let currentFile = null;
   let newLineNum = 0;
+  let inHunk = false;
 
   for (const line of diff.split('\n')) {
-    // Detect file header: +++ b/path/to/file
-    if (line.startsWith('+++ b/')) {
-      currentFile = line.slice(6); // Remove "+++ b/"
-      if (!validLines.has(currentFile)) {
-        validLines.set(currentFile, new Set());
-      }
+    // Each new file starts with "diff --git ..." — reset to header mode.
+    if (line.startsWith('diff --git ')) {
+      inHunk = false;
+      currentFile = null;
       continue;
     }
 
-    // Detect hunk header: @@ -a,b +c,d @@
+    // Hunk header: @@ -a,b +c,d @@ — switches us into hunk mode.
     const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
     if (hunkMatch) {
       newLineNum = parseInt(hunkMatch[1], 10);
+      inHunk = true;
+      continue;
+    }
+
+    if (!inHunk) {
+      // Header section: only "+++ b/path" tells us the new-side file path.
+      if (line.startsWith('+++ b/')) {
+        currentFile = line.slice(6);
+        if (!validLines.has(currentFile)) {
+          validLines.set(currentFile, new Set());
+        }
+      }
       continue;
     }
 
@@ -169,13 +204,16 @@ PREVIOUSLY REPORTED OPEN BUGS: The following bugs were reported by BugBot on an 
 ${JSON.stringify(openThreads, null, 2)}
 
 Resolution rules:
-Always use the "bugId" field (format: "file:line") to identify the real bug location — NOT the GitHub thread anchor, which may differ when the bug's file was not in the diff at the time of reporting.
+Always use the "bugIds" field (a list of "file:line" entries — usually one, occasionally several when multiple bugs share a thread) to identify the real bug locations — NOT the GitHub thread anchor, which may differ when the bug's file was not in the diff at the time of reporting.
 
-1. If the bug's file (from bugId) appears in the diff and the bug is clearly still present → omit its threadId from resolved_thread_ids.
-2. If the bug's file (from bugId) appears in the diff and the bug has been fixed → include its threadId in resolved_thread_ids.
-3. If the bug's file (from bugId) does NOT appear in the diff, use broader judgment: if the PR addresses the root cause elsewhere (e.g. a shared function, a caller, a config) or if no related code path looks broken, include its threadId in resolved_thread_ids.
+For each bugId in a thread, decide whether THAT bug is fixed:
+- File appears in the diff and the bug is still present → unfixed.
+- File appears in the diff and the bug has been corrected → fixed.
+- File does NOT appear in the diff → judgment call: treat as fixed if the PR addresses the root cause elsewhere (e.g. a shared function, caller, or config) or no related code path looks broken; otherwise unfixed.
 
-IMPORTANT: resolved_thread_ids must contain the "threadId" field value (the GitHub GraphQL node ID, e.g. "PRRT_kwDO...") — NOT the "bugId" field value.
+Include a threadId in resolved_thread_ids only when EVERY bugId in that thread is fixed.
+
+IMPORTANT: resolved_thread_ids must contain the "threadId" field value (the GitHub GraphQL node ID, e.g. "PRRT_kwDO...") — NOT a value from the "bugIds" list.
 
 Do NOT re-report still-open bugs as new entries in the bugs array — they already have open threads.`;
   }
@@ -432,6 +470,35 @@ function makeBugId(bug) {
   return `${bug.file}:${bug.line}`;
 }
 
+// --- Normalize a bug entry from Claude's response ---
+// Claude usually emits well-formed JSON, but occasionally a bug has missing/wrongly-typed
+// fields (notably bug.severity undefined → .toUpperCase() crash, bug.line as a numeric
+// string → Set.has() type-strict miss). Normalizing once here means downstream code can
+// trust the shape. Returns null for entries that are not objects so they get filtered out.
+function normalizeBug(bug) {
+  if (!bug || typeof bug !== 'object') return null;
+  let line = bug.line;
+  if (typeof line === 'string') {
+    const n = parseInt(line, 10);
+    if (Number.isFinite(n)) line = n;
+  } else if (typeof line === 'number' && !Number.isInteger(line)) {
+    line = Math.floor(line);
+  }
+  return {
+    ...bug,
+    file: typeof bug.file === 'string' ? bug.file : '',
+    line,
+    severity: typeof bug.severity === 'string' ? bug.severity : 'unknown',
+    title: typeof bug.title === 'string' ? bug.title : '(untitled)',
+    description: typeof bug.description === 'string' ? bug.description : '',
+  };
+}
+
+// --- Build a `#Lnnn` URL fragment, omitting it when line is missing/invalid ---
+function lineFragment(line) {
+  return Number.isInteger(line) && line > 0 ? `#L${line}` : '';
+}
+
 function formatInlineComment(bug, repo, headSha, { isOrphan = false, fileMissing = false } = {}) {
   const severityEmoji = {
     critical: '🔴',
@@ -441,23 +508,24 @@ function formatInlineComment(bug, repo, headSha, { isOrphan = false, fileMissing
   };
   const emoji = severityEmoji[bug.severity] || '⚪';
 
-  let comment = `${emoji} **${bug.severity.toUpperCase()}**: ${bug.title}\n\n${bug.description}`;
+  let comment = `${emoji} **${String(bug.severity).toUpperCase()}**: ${bug.title}\n\n${bug.description}`;
 
   if (fileMissing) {
-    const fileUrl = `https://github.com/${repo}/blob/${headSha}/${bug.file}#L${bug.line}`;
+    const fileUrl = `https://github.com/${repo}/blob/${headSha}/${bug.file}${lineFragment(bug.line)}`;
     comment += `\n\n> ⚠️ *This file is not part of this PR's diff. The bug is at [\`${bug.file}:${bug.line}\`](${fileUrl}).*`;
   } else if (isOrphan) {
-    const fileUrl = `https://github.com/${repo}/blob/${headSha}/${bug.file}#L${bug.line}`;
+    const fileUrl = `https://github.com/${repo}/blob/${headSha}/${bug.file}${lineFragment(bug.line)}`;
     comment += `\n\n> ⚠️ *Could not locate exact line in the diff. The bug is at [\`${bug.file}:${bug.line}\`](${fileUrl}).*`;
   }
 
   // Additional locations
-  if (bug.additional_locations && bug.additional_locations.length > 0) {
+  if (Array.isArray(bug.additional_locations) && bug.additional_locations.length > 0) {
     comment += '\n\n**Additional Locations**\n';
     for (const loc of bug.additional_locations) {
-      const fileUrl = `https://github.com/${repo}/blob/${headSha}/${loc.file}#L${loc.line}`;
+      if (!loc || typeof loc !== 'object' || typeof loc.file !== 'string') continue;
+      const fileUrl = `https://github.com/${repo}/blob/${headSha}/${loc.file}${lineFragment(loc.line)}`;
       const note = loc.note ? ` — ${loc.note}` : '';
-      comment += `\n- [\`${loc.file}:${loc.line}\`](${fileUrl})${note}`;
+      comment += `\n- [\`${loc.file}:${loc.line ?? '?'}\`](${fileUrl})${note}`;
     }
   }
 
@@ -471,9 +539,21 @@ function formatInlineComment(bug, repo, headSha, { isOrphan = false, fileMissing
 function postReview(repo, prNumber, headSha, analysis, validLines, alreadyCommentedBugIds) {
   const { bugs } = analysis;
 
-  // All bugs are posted as inline comments — no review body fallback.
-  // Skipping any that already have an open thread (to avoid duplicates).
-  const inlineComments = [];
+  // GitHub rejects a review POST with two inline comments at the same (path, line, side).
+  // This collides easily because both fallback branches below converge on a single anchor:
+  // multiple bugs whose reported line is outside the diff all anchor to Math.min(...fileLines),
+  // and multiple bugs whose file isn't in the diff all anchor to firstDiffFile. Merge bodies
+  // when that happens instead of pushing duplicates.
+  const commentMap = new Map();
+  const addComment = (path, line, body) => {
+    const key = `${path}\n${line}`;
+    const existing = commentMap.get(key);
+    if (existing) {
+      existing.body += '\n\n---\n\n' + body;
+    } else {
+      commentMap.set(key, { path, line, side: 'RIGHT', body });
+    }
+  };
 
   // First file in the diff (with at least one valid line) is the last-resort anchor
   // when a bug's file isn't in the diff at all. We skip files with empty Sets because
@@ -493,32 +573,19 @@ function postReview(repo, prNumber, headSha, analysis, validLines, alreadyCommen
     const fileLines = validLines.get(bug.file);
     if (fileLines && fileLines.has(bug.line)) {
       // Exact line is in the diff — normal inline comment
-      inlineComments.push({
-        path: bug.file,
-        line: bug.line,
-        side: 'RIGHT',
-        body: formatInlineComment(bug, repo, headSha),
-      });
+      addComment(bug.file, bug.line, formatInlineComment(bug, repo, headSha));
     } else if (fileLines && fileLines.size > 0) {
       // File is in the diff but the exact line isn't — anchor to first valid line in the file
       const anchorLine = Math.min(...fileLines);
-      inlineComments.push({
-        path: bug.file,
-        line: anchorLine,
-        side: 'RIGHT',
-        body: formatInlineComment(bug, repo, headSha, { isOrphan: true }),
-      });
+      addComment(bug.file, anchorLine, formatInlineComment(bug, repo, headSha, { isOrphan: true }));
     } else if (firstDiffFile && firstDiffFileAnchorLine !== null) {
       // Bug's file is not in the diff at all — anchor to first line of first file in the diff
-      inlineComments.push({
-        path: firstDiffFile,
-        line: firstDiffFileAnchorLine,
-        side: 'RIGHT',
-        body: formatInlineComment(bug, repo, headSha, { fileMissing: true }),
-      });
+      addComment(firstDiffFile, firstDiffFileAnchorLine, formatInlineComment(bug, repo, headSha, { fileMissing: true }));
     }
     // If the diff is somehow empty, silently skip (shouldn't happen — checked earlier)
   }
+
+  const inlineComments = Array.from(commentMap.values());
 
   // Build summary body (bug details are always in inline comments, never in the body)
   const body = formatSummary(analysis);
@@ -541,17 +608,37 @@ function postReview(repo, prNumber, headSha, analysis, validLines, alreadyCommen
 
   const [owner, repoName] = repo.split('/');
 
-  try {
-    execSync(
-      `gh api --method POST -H "Accept: application/vnd.github+json" /repos/${owner}/${repoName}/pulls/${prNumber}/reviews --input "${payloadPath}"`,
-      { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
-    );
+  // spawnSync (not execSync) so we can capture stderr separately and print the
+  // GitHub API response body on failure — `gh` only logs `gh: ... (HTTP 422)`
+  // by default, which hides the actual reason (invalid path, line not in diff, etc.).
+  const result = spawnSync('gh', [
+    'api', '--method', 'POST',
+    '-H', 'Accept: application/vnd.github+json',
+    `/repos/${owner}/${repoName}/pulls/${prNumber}/reviews`,
+    '--input', payloadPath,
+  ], { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+
+  if (result.status === 0) {
     console.log(`✅ Posted review with ${inlineComments.length} inline comment(s)`);
-  } catch (err) {
-    console.warn(`⚠️ Failed to post review with inline comments: ${err.message}`);
-    console.log('Falling back to simple PR comment...');
-    postFallbackComment(repo, prNumber, body);
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    return;
   }
+
+  // status is null when the process couldn't start (result.error set) or was killed by a signal.
+  const reason = result.error
+    ? `spawn error: ${result.error.message}`
+    : result.signal
+      ? `killed by signal ${result.signal}`
+      : `exit ${result.status}`;
+  console.warn(`⚠️ Failed to post review with inline comments (${reason})`);
+  const stderr = (result.stderr || '').trim();
+  const stdout = (result.stdout || '').trim();
+  if (stderr) console.warn(`   stderr: ${stderr}`);
+  if (stdout) console.warn(`   stdout: ${stdout}`);
+  // Intentionally leave payload tmp dir in place for debugging when posting failed.
+  console.warn(`   payload: ${payloadPath}`);
+  console.log('Falling back to simple PR comment...');
+  postFallbackComment(repo, prNumber, body);
 }
 
 // --- Fallback: post a simple PR comment ---
@@ -562,22 +649,41 @@ function postFallbackComment(repo, prNumber, body) {
 
   const [owner, repoName] = repo.split('/');
 
-  try {
-    execSync(
-      `gh api --method POST -H "Accept: application/vnd.github+json" /repos/${owner}/${repoName}/issues/${prNumber}/comments --input "${payloadPath}"`,
-      { encoding: 'utf-8' }
-    );
+  const result = spawnSync('gh', [
+    'api', '--method', 'POST',
+    '-H', 'Accept: application/vnd.github+json',
+    `/repos/${owner}/${repoName}/issues/${prNumber}/comments`,
+    '--input', payloadPath,
+  ], { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+
+  if (result.status === 0) {
     console.log('✅ Posted fallback comment');
-  } catch (err) {
-    console.error(`❌ Failed to post fallback comment: ${err.message}`);
-    process.exit(1);
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    return;
   }
+
+  const reason = result.error
+    ? `spawn error: ${result.error.message}`
+    : result.signal
+      ? `killed by signal ${result.signal}`
+      : `exit ${result.status}`;
+  const stderr = (result.stderr || '').trim();
+  const stdout = (result.stdout || '').trim();
+  console.error(`❌ Failed to post fallback comment (${reason})`);
+  if (stderr) console.error(`   stderr: ${stderr}`);
+  if (stdout) console.error(`   stdout: ${stdout}`);
+  console.error(`   payload: ${payloadPath}`);
+  // Exit 1 on this path is intentional — main()'s catch exits 0 for analysis failures, but
+  // failing both inline review AND the fallback comment is unusual enough to surface in CI.
+  process.exit(1);
 }
 
 // --- Fetch open BugBot review threads from previous runs ---
-// Returns an array of { threadId, bugId, description } for each open BugBot thread.
+// Returns an array of { threadId, bugIds, description } for each open BugBot thread.
 // threadId is the stable GitHub node ID used to resolve the thread via GraphQL.
-// bugId is the file:line tag embedded in the comment (used for deduplication).
+// bugIds is the list of "file:line" tags embedded in the comment (one per bug merged
+// into this thread — usually a single entry, but multiple when postReview merged
+// duplicate-anchor bugs into one comment).
 function fetchOpenBugThreads(repo, prNumber) {
   const [owner, repoName] = repo.split('/');
   const tmpDir = mkdtempSync(join(tmpdir(), 'bugbot-threads-'));
@@ -627,16 +733,18 @@ function fetchOpenBugThreads(repo, prNumber) {
   }
 
   const openThreads = [];
+  const idTagRe = /<!-- bugbot-id:([^\s>]+) -->/g;
   for (const thread of rawThreads) {
     if (thread.isResolved) continue;
     const body = thread.comments?.nodes?.[0]?.body ?? '';
-    const idMatch = body.match(/<!-- bugbot-id:([^\s>]+) -->/);
-    if (!idMatch) continue; // not a BugBot comment
+    const bugIds = [...body.matchAll(idTagRe)].map(m => m[1]);
+    if (bugIds.length === 0) continue; // not a BugBot comment
     openThreads.push({
       threadId: thread.id,
-      bugId: idMatch[1],
-      // Strip the hidden tag and pass the human-readable comment body to Claude
-      description: body.replace(/\n<!-- bugbot-id:[^\s>]+ -->/, '').trim(),
+      bugIds,
+      // Strip every hidden tag — merged comments have one per bug — and pass the
+      // human-readable comment body to Claude.
+      description: body.replace(/\n<!-- bugbot-id:[^\s>]+ -->/g, '').trim(),
     });
   }
 
@@ -711,6 +819,10 @@ async function main() {
     throw new Error('Invalid response format: missing bugs array');
   }
 
+  // Normalize bug entries so all downstream code can trust the shape.
+  // Drops non-object entries, defaults missing severity/title, coerces bug.line to integer.
+  analysis.bugs = analysis.bugs.map(normalizeBug).filter(Boolean);
+
   console.log(`   Found ${analysis.bugs.length} potential bug(s)`);
 
   // 8. Resolve threads Claude says are fixed
@@ -720,10 +832,11 @@ async function main() {
     resolveThreads(resolvedIds);
   }
 
-  // 9. Build deduplication set: still-open threads whose bug shouldn't get a new comment
+  // 9. Build deduplication set: still-open threads whose bug shouldn't get a new comment.
+  // A merged thread may carry multiple bugIds, so flatten across threads.
   const resolvedSet = new Set(resolvedIds);
   const alreadyCommentedBugIds = new Set(
-    openThreads.filter(t => !resolvedSet.has(t.threadId)).map(t => t.bugId)
+    openThreads.filter(t => !resolvedSet.has(t.threadId)).flatMap(t => t.bugIds)
   );
 
   // 10. Post review for new bugs

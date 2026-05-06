@@ -2,6 +2,30 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.11] - 2026-05-07
+
+### Fixed
+
+- **HTTP 422 on review POST when multiple bugs share an anchor** — `POST /repos/{owner}/{repo}/pulls/{n}/reviews` rejects payloads with two inline comments at the same `(path, line, side)`. This collided easily because both fallback branches in `postReview` converge on a single anchor: bugs whose reported line falls outside the diff all anchor to `Math.min(...fileLines)`, and bugs whose file isn't in the diff at all anchor to the first file in the diff. With two or more such bugs in a single run, GitHub returned 422 and BugBot fell back to a plain PR comment, losing inline placement entirely. `postReview` now de-duplicates inline comments by `(path, line)` via a Map and merges duplicate bodies with a `---` separator, so multiple bugs at the same anchor produce one well-formed inline comment instead of a rejected payload.
+
+- **`parseDiff` misread `+++ b/` content as a file header** — A hunk content line that happens to start with `+++ b/` (e.g. someone adding a literal diff snippet to a doc or test fixture) was matched by the file-header check, polluting `currentFile` and dropping the rest of that hunk's lines from `validLines`. Added `inHunk` state tracking that only treats `+++ b/` as a header in the diff's header section (between `diff --git` and the first `@@`). Verified against three test cases including the tricky `++ b/example` content.
+
+- **`bug.severity.toUpperCase()` crash when Claude omitted severity** — A malformed bug entry from Claude (missing or non-string `severity`) crashed the action with a TypeError. Added a `normalizeBug` step that runs once after `parseResponse`, defaulting `severity` to `'unknown'`, coercing `bug.line` to an integer (handling string `"42"` and float `42.5`), and dropping non-object entries. Downstream code can now trust the shape.
+
+- **Brittle JSON merging in the >300-files fallback** — `fetchDiffViaFilesAPI` parsed `gh api --paginate`'s concatenated array output via `JSON.parse(raw.replace(/]\s*\[/g, ','))`, which corrupts data whenever any patch contains `]` adjacent to `[` (regex source code, JSON examples, etc.). Replaced with an explicit per-page loop using `?per_page=100&page=N`, eliminating the regex hack entirely.
+
+- **`#Lundefined` URL fragments in inline comments** — When a bug or its `additional_locations` entry was missing a line number, the generated GitHub link contained `#Lundefined`. Added a `lineFragment` helper that emits the fragment only when the line is a positive integer, and tightened `additional_locations` rendering to skip entries without a string `file`.
+
+- **Hidden `gh` API error bodies on failure** — `gh api` errors only print `gh: ... (HTTP 422)` to stderr; the structured response body that explains *why* the request was rejected was being swallowed by `execSync`'s error wrapping. `postReview`, `postFallbackComment`, and `fetchDiff` now use `spawnSync` so we can log the full stderr/stdout and the payload path on failure, making future review-API rejections debuggable from the Actions log alone.
+
+### Changed
+
+- **`bugId` → `bugIds` in open-thread tracking** — A merged inline comment carries multiple `<!-- bugbot-id:file:line -->` tags, so `fetchOpenBugThreads` now uses `matchAll` to collect every tag in a comment and exposes `bugIds: string[]` (one entry per merged bug) instead of a single `bugId`. The dedup set built in `main()` flattens these arrays, ensuring all bugs in a merged thread are correctly suppressed on subsequent runs. The Claude resolution prompt was rewritten to evaluate each `bugId` in a thread independently and resolve the thread only when *every* bug is fixed.
+
+- **`postReview` cleans up its temp dir on success only** — On failure the directory is intentionally retained and its path logged so the rejected payload can be inspected directly.
+
+---
+
 ## [1.0.10] - 2026-04-04
 
 ### Changed
