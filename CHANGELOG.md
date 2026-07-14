@@ -2,6 +2,17 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.12] - 2026-07-14
+
+### Fixed
+
+- **Analysis failed when Claude narrated its findings as prose instead of JSON** — Running as an agent with codebase access, Claude would frequently finish the review correctly (even identifying a real bug) but return a natural-language write-up rather than the required JSON object. `parseResponse` found no JSON to extract and threw `Could not extract JSON from Claude's response`; the retry loop then re-ran the *identical* tool-using prompt, which deterministically produced prose again, so all 3 attempts failed the same way and the completed review was discarded. Two-part fix: (1) a `JSON_ONLY_SYSTEM_PROMPT` is now appended via `--append-system-prompt` on the analysis call — a system-prompt contract is followed far more reliably than the same instruction buried at the end of a long agentic user turn; (2) when parsing still fails, a new `reformatToJson` helper makes a cheap single-turn call (`--max-turns 1`, fast `REFORMAT_MODEL`, no tool use) that repackages the prose write-up into the required schema, recovering the review instead of throwing it away. Only if that recovery also fails does the loop fall back to re-running the full analysis. Verified end-to-end against the exact prose from a failing production run — the rate-limiter regression it had described in prose was recovered as well-formed JSON.
+
+### Changed
+
+- **Single source of truth for the response schema** — The JSON schema block is now emitted by a shared `jsonSchema(hasOpenThreads)` helper used by both `buildPrompt` and `reformatToJson`, so the recovery pass always targets the identical shape the analysis was asked for.
+- **`analyze.mjs` is importable for testing** — `main()` now runs only when the file is executed directly (`node analyze.mjs`), guarded by an `import.meta.url` check, and the core functions are exported. Production invocation is unchanged.
+
 ## [1.0.11] - 2026-05-07
 
 ### Fixed

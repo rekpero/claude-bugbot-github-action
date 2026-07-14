@@ -4,9 +4,25 @@ import { execSync, spawnSync } from 'child_process';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { fileURLToPath } from 'url';
 
 // --- Config ---
 const MODEL = process.env.MODEL || 'sonnet';
+// Model for the prose→JSON recovery pass. It's a pure text transformation with
+// no tool use, so a fast/cheap model is ideal.
+const REFORMAT_MODEL = process.env.REFORMAT_MODEL || 'haiku';
+
+// Appended to the CLI's default system prompt to strengthen the JSON-only
+// contract. System-prompt instructions are followed far more reliably than the
+// same instruction buried at the end of a long agentic user turn — after
+// reading files to verify bugs, the model otherwise tends to narrate its
+// findings as prose instead of emitting the required JSON object.
+const JSON_ONLY_SYSTEM_PROMPT =
+  'You are operating as a non-interactive backend whose output is parsed by a machine. ' +
+  'Your entire final message MUST be a single raw JSON object and nothing else: ' +
+  'no prose, no explanation, no markdown code fences, no leading or trailing text. ' +
+  'Do all reasoning internally — the visible answer is JSON only. ' +
+  'Begin the response with "{" and end it with "}".';
 
 // --- Paths excluded from bug analysis ---
 // Files whose paths start with any of these prefixes are stripped from the diff
@@ -176,6 +192,27 @@ function parseDiff(diff) {
 }
 
 // --- Build the analysis prompt ---
+// The exact JSON shape both the analysis pass and the reformat pass must
+// produce. Kept in one place so the recovery pass targets an identical schema.
+function jsonSchema(hasOpenThreads) {
+  return `{
+  "bugs": [
+    {
+      "file": "path/to/file.js",
+      "line": 42,
+      "severity": "critical|high|medium|low",
+      "title": "Short bug title",
+      "description": "Clear explanation of the bug and suggested fix",
+      "additional_locations": [
+        {"file": "path/to/other/file.js", "line": 15, "note": "Related instance of the same issue"}
+      ]
+    }
+  ],
+  "summary": "Brief 1-2 sentence overall summary"${hasOpenThreads ? `,
+  "resolved_thread_ids": ["<threadId of each thread now fixed>"]` : ''}
+}`;
+}
+
 function buildPrompt(diffPath, openThreads = []) {
   const hasOpenThreads = openThreads.length > 0;
 
@@ -221,22 +258,7 @@ Do NOT re-report still-open bugs as new entries in the bugs array — they alrea
   prompt += `
 
 Respond with ONLY a JSON object (no markdown fences, no extra text) in this exact format:
-{
-  "bugs": [
-    {
-      "file": "path/to/file.js",
-      "line": 42,
-      "severity": "critical|high|medium|low",
-      "title": "Short bug title",
-      "description": "Clear explanation of the bug and suggested fix",
-      "additional_locations": [
-        {"file": "path/to/other/file.js", "line": 15, "note": "Related instance of the same issue"}
-      ]
-    }
-  ],
-  "summary": "Brief 1-2 sentence overall summary"${hasOpenThreads ? `,
-  "resolved_thread_ids": ["<threadId of each thread now fixed>"]` : ''}
-}
+${jsonSchema(hasOpenThreads)}
 
 Omit additional_locations or set it to [] if there are no related locations.
 If no bugs are found, return: {"bugs": [], "summary": "No bugs found in the changes."${hasOpenThreads ? `, "resolved_thread_ids": ["<threadId of each thread now fixed — [] only if none are fixed>"]` : ''}}${hasOpenThreads ? `
@@ -325,6 +347,7 @@ const ANALYSIS_TIMEOUT_MS = 30 * 60_000; // 30-minute hard timeout per attempt
 const MAX_ATTEMPTS = 3;
 
 async function runClaude(diff, openThreads = []) {
+  const hasOpenThreads = openThreads.length > 0;
   // Write diff to a temp file — claude will read it via its file tool
   const tmpDir = mkdtempSync(join(tmpdir(), 'bugbot-diff-'));
   const diffPath = join(tmpDir, 'pr.diff');
@@ -335,6 +358,7 @@ async function runClaude(diff, openThreads = []) {
   const args = [
     '-p', prompt,
     '--output-format', 'text',   // text (not json) — avoids outer-wrapper hang
+    '--append-system-prompt', JSON_ONLY_SYSTEM_PROMPT,  // enforce JSON-only output
     '--dangerously-skip-permissions',
     '--model', MODEL,
     // no --max-budget-usd — unnecessary and a potential hang trigger
@@ -385,13 +409,30 @@ async function runClaude(diff, openThreads = []) {
         );
       }
 
-      // Try to parse the response — retry if Claude returned non-JSON output
+      // Try to parse the response.
       try {
         return parseResponse(result.stdout);
       } catch (parseErr) {
         console.warn(`⚠️  ${parseErr.message}`);
+
+        // The analysis often completes the review correctly but narrates its
+        // findings as prose instead of emitting JSON. Re-running the whole
+        // tool-using analysis tends to produce prose again, so first try a cheap
+        // single-turn pass that repackages the existing prose into JSON. This
+        // recovers a completed review instead of discarding it.
+        if (result.stdout && result.stdout.trim()) {
+          try {
+            console.log('   Attempting to reformat prose response into JSON...');
+            const recovered = reformatToJson(result.stdout, hasOpenThreads);
+            console.log('   ✅ Recovered JSON from prose response.');
+            return recovered;
+          } catch (reformatErr) {
+            console.warn(`   Reformat pass failed: ${reformatErr.message}`);
+          }
+        }
+
         if (attempt < MAX_ATTEMPTS) {
-          console.warn(`   Claude returned non-JSON output. Retrying...`);
+          console.warn(`   Retrying full analysis...`);
           continue;
         }
         throw parseErr;
@@ -401,6 +442,49 @@ async function runClaude(diff, openThreads = []) {
     // Clean up temp dir regardless of success or failure
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
+}
+
+// --- Recover JSON from a prose response ---
+// When the analysis pass narrates its findings instead of emitting JSON, this
+// makes a cheap single-turn call (no tools, no codebase access, fast model) that
+// converts the write-up into the required schema. The expensive analysis already
+// did the hard work — this just repackages it, so a completed review isn't lost.
+function reformatToJson(proseText, hasOpenThreads) {
+  const prompt =
+    `The text below is a bug-review write-up produced by an earlier pass. ` +
+    `Convert it faithfully into a single JSON object matching this exact schema. ` +
+    `Do not add, remove, or invent bugs — only restructure what the write-up already states. ` +
+    `If the write-up concludes there are no bugs, return an object with an empty "bugs" array ` +
+    `and a "summary".\n\n` +
+    `SCHEMA:\n${jsonSchema(hasOpenThreads)}\n\n` +
+    `WRITE-UP:\n${proseText}`;
+
+  const result = spawnSync('claude', [
+    '-p', prompt,
+    '--output-format', 'text',
+    '--max-turns', '1',   // pure transformation — no agentic exploration
+    '--append-system-prompt', JSON_ONLY_SYSTEM_PROMPT,
+    '--dangerously-skip-permissions',
+    '--model', REFORMAT_MODEL,
+  ], {
+    encoding: 'utf-8',
+    maxBuffer: 50 * 1024 * 1024,
+    timeout: 120_000,
+    killSignal: 'SIGKILL',
+    env: { ...process.env, CI: 'true', NO_COLOR: '1', TERM: 'dumb', CLAUDE_NO_TELEMETRY: '1' },
+  });
+
+  if (result.error) {
+    throw new Error(`reformat pass failed to run: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `reformat pass exited with status ${result.status}` +
+      (result.stderr ? ': ' + result.stderr.trim() : '')
+    );
+  }
+
+  return parseResponse(result.stdout);
 }
 
 // --- Parse Claude's response ---
@@ -846,8 +930,13 @@ async function main() {
   console.log('🤖 Claude BugBot - Done!');
 }
 
-main().catch((err) => {
-  console.log(`❌ BugBot failed: ${err.message}`);
-  // Exit 0 so a BugBot analysis failure doesn't block the PR / fail the CI job.
-  process.exit(0);
-});
+// Run only when executed directly (node analyze.mjs), not when imported for tests.
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((err) => {
+    console.log(`❌ BugBot failed: ${err.message}`);
+    // Exit 0 so a BugBot analysis failure doesn't block the PR / fail the CI job.
+    process.exit(0);
+  });
+}
+
+export { jsonSchema, buildPrompt, reformatToJson, parseResponse };
