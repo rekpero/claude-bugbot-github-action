@@ -213,12 +213,27 @@ function jsonSchema(hasOpenThreads) {
 }`;
 }
 
-// The METHOD block below adapts the four phases of the systematic-debugging
-// discipline (root cause → pattern comparison → hypothesis + verification →
-// concrete failure case) to reviewing a diff. Its purpose is the same as in
-// debugging: refuse to act on a symptom. Without it the model reports lines that
-// merely *look* wrong, which shows up as false positives and as bugs anchored to
-// the place the failure surfaces rather than the line that causes it.
+// Three blocks in this prompt exist to control false positives, which are by far
+// BugBot's most damaging failure mode — a noisy reviewer gets muted, a quiet one
+// gets read.
+//
+// REVIEW LENSES and CONFIDENCE adapt the multi-agent code-review command to a
+// single agent. That command fans out five reviewers over separate perspectives
+// and then has a second pass score every issue 0-100 and discard anything under
+// 80. We can't fan out here (one CLI invocation, one JSON answer), so the lenses
+// become sequential passes and the scoring pass becomes a self-check. The 0-100
+// rubric is kept close to the original wording — the thresholds do the work, so
+// paraphrasing them loosely defeats the point. Scores stay internal so the JSON
+// contract is unchanged.
+//
+// The METHOD block adapts the four phases of the systematic-debugging discipline
+// (root cause → pattern comparison → hypothesis + verification → concrete failure
+// case). Its purpose is the same as in debugging: refuse to act on a symptom.
+// Without it the model reports lines that merely *look* wrong, and anchors bugs
+// to the place a failure surfaces rather than the line that causes it.
+//
+// The pipeline reads: lenses generate candidates → DO NOT report drops
+// out-of-scope classes → METHOD verifies mechanism → CONFIDENCE gates on ≥80.
 function buildPrompt(diffPath, openThreads = []) {
   const hasOpenThreads = openThreads.length > 0;
 
@@ -226,7 +241,17 @@ function buildPrompt(diffPath, openThreads = []) {
 
 TASK: Read the file at "${diffPath}" — it contains a PR diff. Identify ONLY genuine bugs, logic errors, security vulnerabilities, race conditions, null/undefined dereferences, off-by-one errors, resource leaks, and other concrete defects in the ADDED or MODIFIED lines (lines starting with +).
 
-IMPORTANT: You have access to the full codebase in the current working directory. Use it only for targeted lookups to verify specific things referenced in the diff — for example, if a function call in the diff looks wrong, read only the file that defines it to confirm the signature. Do NOT browse or scan the codebase broadly. Only look up what is directly referenced by the changed lines. Only report a bug if you are confident it is a real defect after verification. This prevents false positives caused by incomplete diff context.
+IMPORTANT: You have access to the full codebase in the current working directory. Use it only for targeted lookups to verify specific things referenced in the diff — for example, if a function call in the diff looks wrong, read only the file that defines it to confirm the signature. Do NOT browse or scan the codebase broadly. Keep every lookup to what the changed lines directly reference, plus what the REVIEW LENSES below explicitly call for. Only report a bug if you are confident it is a real defect after verification. This prevents false positives caused by incomplete diff context.
+
+REVIEW LENSES: make several independent passes over the diff instead of one. Each pass looks for a different class of defect, and every candidate from every pass goes through METHOD below before it can be reported.
+
+1. DIRECT SCAN. Read the changed lines on their own terms, without pulling in extra context, and look for obvious defects. Favour large bugs over small ones.
+
+2. PROJECT RULES. Read the root CLAUDE.md or AGENTS.md if one exists, plus any in the directories this diff touches. Report a violation only when that file explicitly calls out the specific thing you are flagging, and quote the rule in the description. Never infer a rule that is not written down. Style, formatting, and general code-quality concerns stay out of scope unless a CLAUDE.md explicitly requires them.
+
+3. CODE COMMENTS. Read the comments in and around the modified code, including comments the diff does not touch. A comment often states an invariant, an ordering requirement, or a warning that the change violates. When the change contradicts a nearby comment, decide which one is wrong — report it only when the code is the wrong one.
+
+4. HISTORY. First check whether history is usable: if "git rev-parse --is-shallow-repository" prints true, SKIP this lens entirely and do not guess at it. Otherwise read "git log" and "git blame" for the modified lines. Code that was deliberately added to fix an earlier bug and is silently undone by this diff is a real defect that no amount of reading the diff alone will reveal.
 
 DO NOT report:
 - Style issues, naming conventions, or formatting
@@ -234,6 +259,11 @@ DO NOT report:
 - Performance suggestions unless they cause correctness issues
 - Test coverage gaps
 - Suggestions or improvements that aren't bugs
+- Pre-existing issues, and real issues sitting on lines this PR did not modify
+- Anything a linter, typechecker, or compiler catches on its own — missing or wrong imports, type errors, unused variables, formatting. Assume CI runs those separately; do not run or reason about build steps yourself.
+- Issues deliberately silenced in the code — a lint-ignore comment, an explicit suppression, a comment explaining why it is that way
+- Behaviour changes that are clearly intentional or part of the broader change the PR is making
+- Pedantic nitpicks a senior engineer reviewing this PR would not raise
 
 METHOD: find the root cause before you report anything. Work every candidate through these four steps. A finding that has not been through them is a guess, not a bug — discard it.
 
@@ -246,6 +276,15 @@ METHOD: find the root cause before you report anything. Work every candidate thr
 4. REQUIRE A CONCRETE FAILURE SCENARIO. Only report a bug when you can name specific inputs or state that reach the changed code and produce a specific wrong outcome — wrong value, crash, corrupted data, leak, hang, security hole. "This looks fragile", "this could be a problem", or "consider handling X" are not bugs. Put that scenario in the description: what triggers it, what goes wrong, and the fix. Set severity from the verified impact, not from how suspicious the code looks.
 
 RED FLAGS — if you catch yourself thinking any of these, you have not finished investigating: "this is probably wrong", "this might break", "I don't fully understand this code but it looks off", "I'll flag it and let the author decide". Investigate until you know, or drop the finding.
+
+CONFIDENCE: once a candidate has been through METHOD, score it from 0 to 100 on whether it is genuinely real, using this scale:
+- 0 — Not confident at all. A false positive that does not survive light scrutiny, or a pre-existing issue.
+- 25 — Somewhat confident. It might be real and might not; you were unable to verify it. For a rule-based finding, the rule is not explicitly written in any CLAUDE.md.
+- 50 — Moderately confident. Verified as real, but it may be a nitpick or rarely hit in practice, and it is unimportant relative to the rest of the PR.
+- 75 — Highly confident. Double-checked, and very likely to be hit in practice; the PR's current approach is insufficient. It directly affects the code's functionality, or it is explicitly called out in a relevant CLAUDE.md.
+- 100 — Absolutely certain. Double-checked and confirmed; it will happen frequently in practice and the evidence directly confirms it.
+
+Score each candidate against this scale honestly, as if a separate reviewer had to defend the score. Report ONLY candidates that score 80 or above. Drop everything below 80 silently — do not report it at a lower severity, do not mention it as a minor note, do not fold it into the summary. Scoring is internal reasoning; the score itself is not part of your output. If nothing scores 80 or above, return an empty bugs array.
 
 For each bug found, determine the EXACT line number in the NEW version of the file. The line numbers can be calculated from the @@ hunk headers in the diff. For example, "@@ -10,6 +15,8 @@" means the new file starts at line 15 for that hunk.
 

@@ -23,6 +23,8 @@ If you're already paying for Claude Pro or Max, you're leaving money on the tabl
 - Free to use with any Claude Pro or Max subscription — just generate a setup token
 - Focuses only on real bugs — ignores style, formatting, and documentation issues
 - Investigates before reporting — traces each suspect value back to its origin, compares against working code in the repo, and verifies the failure mechanism against the actual source, so findings come with a concrete trigger instead of a suspicion
+- Reviews through four lenses — a direct scan of the changed lines, your `CLAUDE.md`/`AGENTS.md` rules, the code comments around the change, and git history for fixes the PR silently undoes
+- Scores every candidate 0–100 for confidence and reports only those at 80 or above, so low-signal findings never reach the PR
 - Handles large diffs gracefully (truncates at 200KB)
 - Falls back to a summary comment if inline comments can't be mapped to diff lines
 
@@ -126,6 +128,7 @@ And a summary review comment:
 - The setup token expires periodically. If the action starts failing with auth errors, regenerate it with `claude setup-token`.
 - Diffs larger than 200KB are truncated to keep analysis costs and latency reasonable.
 - The action only comments on bugs in added/modified lines — it won't flag issues in unchanged code.
+- The git-history lens needs real history. `actions/checkout@v4` checks out a single commit by default, and BugBot detects that and skips the lens. To enable it, set `fetch-depth: 0` on the checkout step (see `example-workflow.yml`) — at the cost of a slower checkout on large repos.
 - Bot PRs (e.g. Dependabot) are skipped by default in the example workflow. Remove the `if` condition to include them.
 
 ## Disclaimer

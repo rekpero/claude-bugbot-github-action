@@ -30,6 +30,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        # Optional: fetch full history to enable BugBot's history lens, which reads
+        # git log/blame on the modified lines to catch changes that silently undo an
+        # earlier bug fix. The default shallow checkout (depth 1) has no history, so
+        # BugBot detects that and skips the lens. Costs a slower checkout on big repos.
+        # with:
+        #   fetch-depth: 0
 
       - name: Run Claude BugBot
         uses: rekpero/claude-bugbot-github-action@main
