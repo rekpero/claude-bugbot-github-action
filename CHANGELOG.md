@@ -2,6 +2,16 @@
 
 All notable changes to Claude BugBot GitHub Action will be documented in this file.
 
+## [1.0.13] - 2026-08-01
+
+### Changed
+
+- **Analysis prompt now enforces a root-cause investigation before a bug is reported** — The prompt told Claude to verify findings against the codebase but not *how*, so a candidate that merely looked wrong could be reported after a single confirming glance. `buildPrompt` now carries a `METHOD` block adapting the four phases of systematic debugging to diff review: (1) trace a suspect value backward to where it originates rather than stopping at the line where it is consumed; (2) find an existing working use of the same function/API/pattern in the repo, read it in full, and account for every difference — no meaningful difference means drop the candidate; (3) state the failure mechanism explicitly and verify it against actual source (definition, type, caller, config), discarding it if verification doesn't confirm it, instead of downgrading it to a "potential" issue and reporting it anyway; (4) report only when specific inputs or state can be named that produce a specific wrong outcome, with that scenario written into the description and severity set from verified impact. A `RED FLAGS` list closes the loophole the previous wording left open — "probably wrong", "might break", "I'll flag it and let the author decide" now explicitly mean the investigation is unfinished. Two effects beyond fewer false positives: bugs anchor to the line that *causes* the failure rather than the line where it surfaces, and descriptions state a reproducible trigger instead of a suspicion.
+
+  The JSON contract is unchanged — `jsonSchema`, `reformatToJson`, and `parseResponse` are untouched, so the prose→JSON recovery pass and all downstream comment formatting continue to work as before.
+
+---
+
 ## [1.0.12] - 2026-07-14
 
 ### Fixed

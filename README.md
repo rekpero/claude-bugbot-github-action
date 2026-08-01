@@ -22,6 +22,7 @@ If you're already paying for Claude Pro or Max, you're leaving money on the tabl
 - Posts inline review comments directly on the affected lines
 - Free to use with any Claude Pro or Max subscription — just generate a setup token
 - Focuses only on real bugs — ignores style, formatting, and documentation issues
+- Investigates before reporting — traces each suspect value back to its origin, compares against working code in the repo, and verifies the failure mechanism against the actual source, so findings come with a concrete trigger instead of a suspicion
 - Handles large diffs gracefully (truncates at 200KB)
 - Falls back to a summary comment if inline comments can't be mapped to diff lines
 

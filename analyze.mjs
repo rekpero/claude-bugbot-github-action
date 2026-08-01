@@ -213,6 +213,12 @@ function jsonSchema(hasOpenThreads) {
 }`;
 }
 
+// The METHOD block below adapts the four phases of the systematic-debugging
+// discipline (root cause → pattern comparison → hypothesis + verification →
+// concrete failure case) to reviewing a diff. Its purpose is the same as in
+// debugging: refuse to act on a symptom. Without it the model reports lines that
+// merely *look* wrong, which shows up as false positives and as bugs anchored to
+// the place the failure surfaces rather than the line that causes it.
 function buildPrompt(diffPath, openThreads = []) {
   const hasOpenThreads = openThreads.length > 0;
 
@@ -228,6 +234,18 @@ DO NOT report:
 - Performance suggestions unless they cause correctness issues
 - Test coverage gaps
 - Suggestions or improvements that aren't bugs
+
+METHOD: find the root cause before you report anything. Work every candidate through these four steps. A finding that has not been through them is a guess, not a bug — discard it.
+
+1. TRACE TO THE ROOT CAUSE. Read the changed lines and the paths they create carefully — do not skim. When a changed line consumes a value (a parameter, a return value, a field, a config entry), trace backward to where that value originates: what produces it, what callers pass in, whether it can be null/undefined/empty/out-of-range by the time it arrives. Keep tracing up until you reach the origin. Report the bug at the origin if the origin is itself in the diff; otherwise report at the changed line that breaks and name the origin in the description.
+
+2. COMPARE AGAINST WORKING CODE. Find an existing, working use of the same function, API, or pattern in the codebase and read it in full. List every difference between it and the changed code, however small. A difference you cannot explain is a candidate; no meaningful difference means the changed code is probably fine — drop it.
+
+3. STATE A HYPOTHESIS, THEN VERIFY IT. For each candidate, state the mechanism precisely to yourself: "this breaks because X". Then verify that mechanism against the actual source — read the function definition, the type, the caller, the config — not against your assumption of how it behaves. Verify one thing at a time. If verification does not confirm the mechanism, discard the candidate; do not downgrade it to a "potential" or "possible" issue and report it anyway.
+
+4. REQUIRE A CONCRETE FAILURE SCENARIO. Only report a bug when you can name specific inputs or state that reach the changed code and produce a specific wrong outcome — wrong value, crash, corrupted data, leak, hang, security hole. "This looks fragile", "this could be a problem", or "consider handling X" are not bugs. Put that scenario in the description: what triggers it, what goes wrong, and the fix. Set severity from the verified impact, not from how suspicious the code looks.
+
+RED FLAGS — if you catch yourself thinking any of these, you have not finished investigating: "this is probably wrong", "this might break", "I don't fully understand this code but it looks off", "I'll flag it and let the author decide". Investigate until you know, or drop the finding.
 
 For each bug found, determine the EXACT line number in the NEW version of the file. The line numbers can be calculated from the @@ hunk headers in the diff. For example, "@@ -10,6 +15,8 @@" means the new file starts at line 15 for that hunk.
 
